@@ -19,9 +19,9 @@ from functools import partial
 @dataclass
 class TDVP:
     useSNR: bool = False
-    snrTol: float = 2.
-    svdTol: float = 1e-7
-    diagonalShift: float = 1e-9
+    snrTol: float = 0.
+    svdTol: float = 1e-5
+    diagonalShift: float = 0
     diagonalizeOnDevice: bool = True
 
     def __post_init__(self):
@@ -119,7 +119,7 @@ class TDVP:
 
         # Evaluate local energy
         start_timing(outp, "compute Eloc")
-        Eloc, sampleGradients = evolutionEq(psi, sampleConfigs)
+        Eloc, sampleGradients = evolutionEq(psi, sampleConfigs, t)
         stop_timing(outp, "compute Eloc", waitFor=Eloc)
 
         start_timing(outp, "solve TDVP eqn.")

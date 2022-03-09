@@ -90,23 +90,23 @@ class AdaptiveHeun:
         while fe < 1.:
 
             y = yInitial.copy()
-            k0 = f(y, t, **rhsArgs, intStep=0)
+            k0, _ = f(y, t, **rhsArgs, intStep=0)
             y += dt * k0
-            k1 = f(y, t + dt, **rhsArgs, intStep=1)
+            k1, _ = f(y, t + dt, **rhsArgs, intStep=1)
             dy0 = 0.5 * dt * (k0 + k1)
 
             # now with half step size
             y -= 0.5 * dt * k0
-            k10 = f(y, t + 0.5 * dt, **rhsArgs, intStep=2)
+            k10, _ = f(y, t + 0.5 * dt, **rhsArgs, intStep=2)
             dy1 = 0.25 * dt * (k0 + k10)
             y = yInitial + dy1
-            k01 = f(y, t + 0.5 * dt, **rhsArgs, intStep=3)
+            k01, _ = f(y, t + 0.5 * dt, **rhsArgs, intStep=3)
             y += 0.5 * dt * k01
-            k11 = f(y, t + dt, **rhsArgs, intStep=4)
+            k11, _ = f(y, t + dt, **rhsArgs, intStep=4)
             dy1 += 0.25 * dt * (k01 + k11)
 
             # compute deviation
-            updateDiff = normFunction(dy1 - dy0)
+            updateDiff = normFunction(dy1 - dy0, f.S0)
             fe = self.tolerance / updateDiff
 
             if 0.2 > 0.9 * fe**0.33333:
@@ -126,4 +126,4 @@ class AdaptiveHeun:
 
         self.dt = dt
 
-        return yInitial + dy1, realDt
+        return yInitial + dy1, realDt, {}

@@ -10,6 +10,7 @@ import global_defs
 
 import net
 import grid
+import visualization
 
 
 def gen_data(size, mode="standard_normal", key=0, std=1):
@@ -50,10 +51,10 @@ def train(vState, data, grid, batchsize=100, epoches=100, key=0, lr=1e-3, target
         print(f"Epoch {epoch}")
         if epoch % 50 == 0:
             print(vState.integrate(grid))
-            vState.plot(grid)
+            visualization.plot(vState, grid)
             if target_fun != None:
-                vState.plot_diff(grid, target_fun)
-            vState.plot_data(data, grid)
+                visualization.plot_diff(vState, grid, target_fun)
+            visualization.plot_data(data, grid)
             plt.show()
         print(loss)
         losses.append(loss)

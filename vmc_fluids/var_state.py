@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import flax.linen as nn
 from dataclasses import dataclass
+from functools import partial
 
 import global_defs
 
@@ -16,8 +17,8 @@ import net
 
 class VarState:
 
-    def __init__(self, sampleKey, dim, *args, **kwargs):
-        self.sampleKey = jax.random.PRNGKey(sampleKey)
+    def __init__(self, sampler, dim, *args, **kwargs):
+        self.sampler = sampler
         self.dim = dim
         self.net, self.params = self.init_net(*args, **kwargs)
 
@@ -29,7 +30,8 @@ class VarState:
         self._grads_params_jitd = global_defs.pmap_for_my_devices(jax.vmap(jax.value_and_grad(lambda coords, params: - self.real_space_prob(coords, params), argnums=1), in_axes=(0, None)), in_axes=(0, None))
         self._grads_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(jax.value_and_grad(lambda coords, params: self.real_space_prob(coords, params), argnums=(0, 1)), in_axes=(0, None)), in_axes=(0, None))
         self._hessian_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(jax.jacrev(jax.jacfwd(lambda coords, params: self.real_space_prob(coords, params), argnums=0), argnums=0), in_axes=(0, None)), in_axes=(0, None))
-        self._latent_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(lambda coords, params: self.net.apply(params, coords, inv=True), in_axes=(0, None)), in_axes=(0, None))
+        self._hessiandiag_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(self._hvp, in_axes=(0, None)), in_axes=(0, None))
+        self._latent_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(lambda coords, params: self.net.apply(params, coords, inv=True)[0], in_axes=(0, None)), in_axes=(0, None))
         self._flatten_tree_jitd = global_defs.pmap_for_my_devices(jax.vmap(self.flatten_tree))
 
     def __call__(self, coords, mode="eval", avg=False):
@@ -52,6 +54,9 @@ class VarState:
                 return value, grad
 
         if mode == "eval_coordgrads":
+            """
+            return the function value, the gradients with respect to the input and the parameters
+            """
             value, (coord_grads, param_grads) = self._grads_coords_jitd(coords, self.params)
             if avg:
                 ValueError("Not implemented.")
@@ -64,21 +69,23 @@ class VarState:
         warnings.warn("Computing full Hessian of the coordinates.")
         return self._hessian_coords_jitd(coords, self.params)
 
-    def real_space_prob(self, x, params):
-        assert(x.shape[0] == self.dim)
-        z = self.net.apply(params, x, inv=False)
-        p_latent_log = self.latent_space_prob(z)
-        jac = jax.jacfwd(self.net.apply, argnums=1)(params, x, inv=False)
-        jac_det = jnp.linalg.det(jac)
-        return p_latent_log + jnp.log(jnp.abs(jac_det))
-        # return p_latent_log + jnp.log(jac_det)
+    def hessian_diag(self, coords):
+        import warnings
+        warnings.warn("Hessian diag is not correctly implemented.")
+        return self._hessiandiag_coords_jitd(coords, self.params)
 
-    def latent_space_prob(self, x, sigma=1):
-        return -0.5 * jnp.sum(x**2) / sigma**2 - jnp.log(jnp.sqrt(2 * jnp.pi * sigma**2)) * self.dim
+    def _hvp(self, coords, params):
+        f = jax.grad(partial(lambda x, y: self.real_space_prob(y, x), params))
+        return jax.jvp(f, (coords,), (jnp.ones_like(coords),))[1]
+
+    def real_space_prob(self, x, params):
+        z, log_jac = self.net.apply(params, x, inv=False)
+        p_latent_log = self.sampler.latent_space_prob(z)
+        return p_latent_log + log_jac
 
     def sample(self, numSamples):
-        self.sampleKey, key = jax.random.split(self.sampleKey)
-        latent_space_samples = jax.random.normal(key, (1, numSamples, self.dim))
+        # latent_space_samples = self.sampler(numSamples) + self.offset
+        latent_space_samples = self.sampler(numSamples)
         return self._latent_coords_jitd(latent_space_samples, self.params)
 
     def average_tree(self, tree, axis=(0, 1)):
@@ -110,55 +117,17 @@ class VarState:
         flat, _ = jax.tree_util.tree_flatten(jax.tree_util.tree_map(lambda x: x.ravel(), tree))
         return jnp.concatenate(flat).ravel()
 
-    # plotting of probabilities
-    def plot(self, grid):
-        real_space_probs = self._evaluate_net_on_batch_jitd(grid.coords[None, ...], self.params)
-        fig = plt.figure()
-        ax = plt.axes(projection='3d')
-        real_space_probs = jnp.exp(real_space_probs).reshape((grid.n_gridpoints, grid.n_gridpoints))
-        ax.plot_surface(grid.meshgrid[0], grid.meshgrid[1], real_space_probs, cmap=cm.coolwarm)
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_zlabel('z')
-        ax.set_title('Model')
-
-    def plot_diff(self, grid, target_fun):
-        real_space_probs = self._evaluate_net_on_batch_jitd(grid.coords[None, ...], self.params)
-        fig = plt.figure()
-        ax = plt.axes(projection='3d')
-        real_space_probs = jnp.exp(real_space_probs).reshape((grid.n_gridpoints, grid.n_gridpoints))
-
-        target_vals = target_fun(grid.coords).reshape((grid.n_gridpoints, grid.n_gridpoints))
-        diff = real_space_probs - target_vals
-        print("integral over difference", grid.bin_area * jnp.sum(diff))
-
-        ax.plot_surface(grid.meshgrid[0], grid.meshgrid[1], diff, cmap=cm.coolwarm)
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_zlabel('z')
-        ax.set_title('Model - Target Function')
-
-    def plot_data(self, data, grid):
-        bound = grid.bounds[0]
-        hist, xedges, yedges = np.histogram2d(data[0, :, 0], data[0, :, 1], bins=grid.n_gridpoints, range=[[-bound, bound], [-bound, bound]])
-        fig = plt.figure()
-        ax = plt.axes(projection='3d')
-        ax.plot_surface(grid.meshgrid[0], grid.meshgrid[1], hist, cmap=cm.coolwarm)
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_zlabel('z')
-        ax.set_title('Data')
-
-    def init_net(self, widths, key, **kwargs):
+    def init_net(self, key, depth, **kwargs):
         key = jax.random.PRNGKey(key)
         inds_up = []
         inds_down = []
-        for width in widths:
-            ind_up = jax.random.choice(key, width, shape=(int(width / 2),), replace=False)
-            ind_down = jnp.setdiff1d(jnp.arange(width), ind_up)
+        for _ in range(depth):
+            key, use_key = jax.random.split(key)
+            ind_up = jax.random.choice(use_key, self.dim, shape=(int(self.dim / 2),), replace=False)
+            ind_down = jnp.setdiff1d(jnp.arange(self.dim), ind_up)
             inds_up.append(ind_up)
             inds_down.append(ind_down)
-        mynet = net.INN(inds_up, inds_down, **kwargs, widths=widths)
-        # mynet = net.SanityINN(inds_up, inds_down, widths=widths)
-        params = mynet.init(key, jnp.zeros(widths[0]))
+        mynet = net.INN(inds_up, inds_down, **kwargs)
+        # mynet = net.SanityINN(inds_up, inds_down)
+        params = mynet.init(key, jnp.zeros(self.dim))
         return mynet, params
