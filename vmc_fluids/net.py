@@ -17,16 +17,16 @@ class SingleTrafo(nn.Module):
     use_bias: bool = True
     kernel_init: callable = partial(uniform_init, scale=1e-5)
     bias_init: callable = jax.nn.initializers.zeros
-    alpha: float = 1e0
+    alpha: float = 1e1
 
     @nn.compact
     def __call__(self, x):
         for feat in self.intmediate:
             x = nn.Dense(features=feat, use_bias=self.use_bias,
-                         kernel_init=partial(uniform_init, scale=1e0), bias_init=self.bias_init)(x)
+                         kernel_init=partial(uniform_init, scale=1e-3), bias_init=self.bias_init)(x)
             # x = 1 + nn.elu(x)
             # x = nn.relu(x)
-            x = nn.elu(x)
+            x = 1 + nn.tanh(x)
         return self.alpha * nn.tanh(nn.Dense(features=self.width, use_bias=self.use_bias,
                                              kernel_init=self.kernel_init, bias_init=self.bias_init)(x))
         # return nn.Dense(features=self.width, use_bias=self.use_bias)(x)
@@ -112,27 +112,50 @@ class INN(nn.Module):
     inds_up: list
     inds_down: list
     pt_sym: bool = False
+    coordinate_transform: callable = lambda x, inv=False: x
+    coordinate_transform_jac: callable = lambda x, inv=False: 0
     intmediate: tuple = (3,)
     offset: any = jnp.zeros(2)
+    use_offset: float = 1.
 
     def setup(self):
         self.blocks = [SingleBlock(ind_up, ind_down, intmediate=self.intmediate, pt_sym=self.pt_sym) for ind_up, ind_down in zip(self.inds_up, self.inds_down)]
 
     def __call__(self, x, inv=False):
         log_jac = 0
+
+        x = x - self.offset * self.use_offset
+        x = self.coordinate_transform(x)
+        log_jac += self.coordinate_transform_jac(x)
+
         if not inv:
-            x = x - self.offset
             for block in self.blocks:
                 x, log_jac_block = block(x, inv=inv)
                 log_jac += log_jac_block
-            x = x + self.offset
         else:
-            x = x - self.offset
             for block in self.blocks[::-1]:
                 x, log_jac_block = block(x, inv=inv)
                 log_jac += log_jac_block
-            x = x + self.offset
+
+        log_jac += self.coordinate_transform_jac(x, inv=True)
+        x = self.coordinate_transform(x, inv=True)
+        x = x + self.offset * self.use_offset
+
         return x, log_jac
+
+    # def coordinate_transform(self, x, inv=False):
+    #     if inv:
+    #         # r, phi = x[0], x[1]
+    #         # return r * jnp.array([jnp.cos(phi), jnp.sin(phi)])
+    #         r, y_by_x = x[0], x[1]
+    #         return r * jnp.array([1 / jnp.sqrt(y_by_x**2 + 1), y_by_x / jnp.sqrt(y_by_x**2 + 1)])
+    #     else:
+    #         # r = jnp.sqrt(jnp.sum(x**2))
+    #         # phi = jax.lax.cond(x[1] > 0, lambda x: jnp.arccos(jnp.nan_to_num(x[0] / r)), lambda x: - jnp.arccos(jnp.nan_to_num(x[0] / r)), x)
+    #         # return jnp.array([r, phi])
+    #         r = jnp.sqrt(jnp.sum(x**2))
+    #         y_by_x = jnp.nan_to_num(x[1] / x[0])
+    #         return jnp.array([r, y_by_x])
 
 
 class SanityINN(nn.Module):

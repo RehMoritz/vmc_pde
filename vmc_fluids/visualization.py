@@ -12,18 +12,24 @@ import global_defs
 
 
 # plotting of probabilities
-def plot(vState, grid, z_lim=None):
+def plot(vState, grid, z_lim=None, proj=False):
     real_space_probs = vState._evaluate_net_on_batch_jitd(grid.coords[None, ...], vState.params)
-    fig = plt.figure()
-    ax = plt.axes(projection='3d')
-    real_space_probs = jnp.exp(real_space_probs).reshape((grid.n_gridpoints, grid.n_gridpoints))
-    ax.plot_surface(grid.meshgrid[0], grid.meshgrid[1], real_space_probs, cmap=cm.coolwarm)
+    fig = plt.figure(figsize=(6, 6))
+    if proj:
+        ax = plt.axes()
+        real_space_probs = jnp.exp(real_space_probs).reshape((grid.n_gridpoints, grid.n_gridpoints))
+        ax.pcolormesh(grid.meshgrid[0], grid.meshgrid[1], real_space_probs, cmap=cm.coolwarm)
+    else:
+        ax = plt.axes(projection='3d')
+        real_space_probs = jnp.exp(real_space_probs).reshape((grid.n_gridpoints, grid.n_gridpoints))
+        ax.plot_surface(grid.meshgrid[0], grid.meshgrid[1], real_space_probs, cmap=cm.coolwarm)
+        ax.set_zlabel('z')
+        if z_lim != None:
+            ax.set_zlim([0, z_lim])
+
+    ax.set_title('Model')
     ax.set_xlabel('x')
     ax.set_ylabel('y')
-    ax.set_zlabel('z')
-    if z_lim != None:
-        ax.set_zlim([0, z_lim])
-    ax.set_title('Model')
 
 
 def plot_line(vState, scale=1, n_gridpoints=100, fit=False, offset=np.zeros(2)):
@@ -86,9 +92,11 @@ def plot_data_1D(data, grid, title='Data'):
     plt.show()
 
 
-def plot_vectorfield(grid, vecfield_fun, t=0):
+def plot_vectorfield(grid, evolutionEq, t=0, params={}):
+    vecfield_fun = evolutionEq.eqParams[evolutionEq.name]["vel_field"]
+    eqParams = evolutionEq.eqParams[evolutionEq.name]["params"]
     assert grid.dim == 2
     [x, y] = grid.meshgrid
-    field = jax.vmap(vecfield_fun, in_axes=(0, None))(grid.coords, t).reshape(-1, 2)
+    field = jax.vmap(vecfield_fun, in_axes=(None, 0, None))(params, grid.coords, t).reshape(-1, 2)
     u, v = field[:, 0], field[:, 1]
     plt.quiver(x, y, u, v)

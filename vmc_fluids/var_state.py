@@ -80,11 +80,10 @@ class VarState:
 
     def real_space_prob(self, x, params):
         z, log_jac = self.net.apply(params, x, inv=False)
-        p_latent_log = self.sampler.latent_space_prob(z)
+        p_latent_log = self.sampler.latent_space_prob(z, self.sampler.mcmc_info["offset"])
         return p_latent_log + log_jac
 
     def sample(self, numSamples):
-        # latent_space_samples = self.sampler(numSamples) + self.offset
         latent_space_samples = self.sampler(numSamples)
         return self._latent_coords_jitd(latent_space_samples, self.params)
 

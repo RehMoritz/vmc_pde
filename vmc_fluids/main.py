@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
 import global_defs
 import var_state
@@ -15,6 +16,7 @@ import evolutionEq
 import tdvp
 import stepper
 import visualization
+import mpi_wrapper
 
 
 def norm_fun(v, S):
@@ -22,7 +24,7 @@ def norm_fun(v, S):
     return v @ S @ v
 
 
-def latent_space_dist_paper(x):
+def latent_space_dist_paper(x, offset):
     r = jnp.min(jnp.array([1, 4 * jnp.sqrt(jnp.sum((x - offset)**2))]))
     return jnp.log(0.5 * (1 + jnp.cos(jnp.pi * r)))
 
@@ -31,9 +33,19 @@ def latent_space_dist_paper(x):
 initKey = 0
 sampleKey = 0
 
-mode_dict = {"fluidpaper": {"offset": jnp.ones(2) * 0.25, "dim": 2, "latent_space_prob": latent_space_dist_paper, "mcmcbound": 0.25, "gridbound": 1., "symgrid": False, "evolution_type": "advection_divFree"},
+mode_dict = {"fluidpaper": {"offset": jnp.ones(2) * 0.25, "dim": 2, "latent_space_prob": latent_space_dist_paper, "mcmcbound": 0.25, "gridbound": 1., "symgrid": False, "evolution_type": "advection_paper"},
+             "harmonicOsc": {"offset": jnp.ones(2) * 1, "dim": 2, "latent_space_prob": sampler.unit_gauss, "mcmcbound": 0.25, "gridbound": 8., "symgrid": True, "evolution_type": "advection_hamiltonian"},
              "diffusion": {"offset": jnp.zeros(2), "dim": 2, "latent_space_prob": sampler.unit_gauss, "mcmcbound": 1, "gridbound": 10., "symgrid": True, "evolution_type": "diffusion"}}
-mode = "fluidpaper"
+mode = "harmonicOsc"
+
+wdir = "output/"
+if mpi_wrapper.rank == 0:
+    try:
+        os.makedirs(wdir)
+    except OSError:
+        print("Creation of the directory %s failed" % wdir)
+    else:
+        print("Successfully created the directory %s " % wdir)
 
 
 dim = mode_dict[mode]["dim"]
@@ -45,10 +57,10 @@ latent_space_prob = mode_dict[mode]["latent_space_prob"]
 evolution_type = mode_dict[mode]["evolution_type"]
 
 # set up sampler
-sampler = sampler.Sampler(dim=dim, numChains=1, latent_space_prob=latent_space_prob, mcmc_info={"offset": offset, "bound": mcmcbound})
+sampler = sampler.Sampler(dim=dim, numChains=30, latent_space_prob=latent_space_prob, mcmc_info={"offset": offset, "bound": mcmcbound})
 
 # set up variational state
-vState = var_state.VarState(sampler, dim, initKey, 30, pt_sym=False, intmediate=(3,) * 0, offset=offset)
+vState = var_state.VarState(sampler, dim, initKey, 15, pt_sym=False, intmediate=(3,) * 0, offset=offset)
 print(f"Number of Model parameters: {vState.numParameters}")
 
 
@@ -84,11 +96,11 @@ if dim < 4:
 # time evolution
 dt = 1e-2
 tol = 1e-2
-myStepper = stepper.Euler(timeStep=dt)
-# myStepper = stepper.AdaptiveHeun(timeStep=dt, tol=tol)
+maxStep = dt
+# myStepper = stepper.Euler(timeStep=dt)
+myStepper = stepper.AdaptiveHeun(timeStep=dt, tol=tol, maxStep=maxStep)
 tdvpEq = tdvp.TDVP()
 evolutionEq = evolutionEq.EvolutionEquation(name=evolution_type)
-# evolutionEq = evolutionEq.EvolutionEquation(name="advection_divFree")
 numSamples = 100000
 
 # visualization.plot_vectorfield(grid, evolutionEq._velocity_field)
@@ -99,19 +111,30 @@ numSamples = 100000
 # plt.show()
 
 t = 0
-t_end = 5
-infos = {"times": [], "ev": []}
+t_end = 1
+plot_every = 0.001
+
+visualization.plot(vState, grid, proj=True)
+plt.savefig(wdir + f't_{t:.3f}.pdf')
+plt.show()
+
+infos = {"times": [], "ev": [], "snr": [], "solver_res": []}
 while t < t_end + dt:
     dp, dt, info = myStepper.step(0, tdvpEq, vState.get_parameters(), evolutionEq=evolutionEq, psi=vState, numSamples=numSamples, normFunction=norm_fun)
     vState.set_parameters(dp)
     infos["times"].append(t)
-    print(f"t = {t}")
+    print(f"t = {t:.3f}, dt = {dt:e}")
+    print(f"\t > Solver Residual = {tdvpEq.solverResidual}")
+    print(f"\t > TDVP Error = {tdvpEq.tdvp_error}")
+    # print(f"\t > SNR = {tdvpEq.snr}")
 
     for key in info.keys():
         if key not in infos.keys():
             infos[key] = []
         infos[key].append(info[key])
     infos["ev"].append(tdvpEq.ev)
+    infos["snr"].append(tdvpEq.snr)
+    infos["solver_res"].append(tdvpEq.solverResidual)
 
     if np.abs(np.around(t, decimals=5) % 0.25) < 0.05 * dt:
         if dim == 2:
@@ -128,18 +151,41 @@ while t < t_end + dt:
 
     t = t + dt
 
+plt.figure()
 plt.plot(np.array(infos["times"]), np.array(infos["variance"]), label='INN')
 plt.plot(np.array(infos["times"]), 1 + 2 * np.array(infos["times"]), label='Exact')
 plt.grid()
 plt.ylabel(r'$\sigma^2$')
 plt.xlabel(r'$t$')
 plt.legend()
-plt.show()
 
+plt.figure()
+plt.plot(np.array(infos["times"]), np.array(infos["x2"]), label=r'$\langle x^2\rangle$')
+plt.plot(np.array(infos["times"]), np.array(infos["x4"]), label=r'$\langle x^4\rangle$')
+plt.plot(np.array(infos["times"]), np.array(infos["x6"]), label=r'$\langle x^6\rangle$')
+plt.grid()
+plt.ylabel(r'$\sigma^2$')
+plt.xlabel(r'$t$')
+plt.legend()
 
+plt.figure()
+plt.plot(np.array(infos["times"]), np.array(infos["solver_res"]))
+plt.grid()
+plt.ylabel('Residual')
+plt.xlabel(r'$t$')
+plt.yscale('log')
+
+plt.figure()
 plt.plot(np.array(infos["times"]), np.array(infos["ev"]))
 plt.grid()
 plt.ylabel('EV')
+plt.xlabel(r'$t$')
+plt.yscale('log')
+
+plt.figure()
+plt.plot(np.array(infos["times"]), np.array(infos["snr"]))
+plt.grid()
+plt.ylabel('SNR')
 plt.xlabel(r'$t$')
 plt.yscale('log')
 plt.show()

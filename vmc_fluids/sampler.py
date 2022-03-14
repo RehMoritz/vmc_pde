@@ -16,8 +16,8 @@ from jax.tree_util import tree_flatten, tree_unflatten
 import net
 
 
-def unit_gauss(x, sigma=1):
-    return - jnp.log(jnp.sqrt(2 * jnp.pi * sigma**2)) * x.shape[0] - 0.5 * jnp.sum(x**2) / sigma**2
+def unit_gauss(x, offset, sigma=1e0):
+    return - jnp.log(jnp.sqrt(2 * jnp.pi * sigma**2)) * x.shape[0] - 0.5 * jnp.sum((x - offset)**2) / sigma**2
 
 
 def radial_update_prop(key, numChains, mcmc_info):
@@ -29,7 +29,6 @@ def radial_update_prop(key, numChains, mcmc_info):
     y = r * jnp.sin(phi)
 
     return jnp.concatenate((x, y), axis=-1) + mcmc_info["offset"]
-    # return jnp.concatenate((x, y), axis=-1)
 
 
 @dataclass
@@ -71,7 +70,7 @@ class Sampler:
             return self._get_samples_jitd[numSamples](key_to_use, self.states)
 
         else:
-            return self.exact_sample_generator_dict[self.name](key_to_use, (1, numSamples, self.dim))
+            return self.exact_sample_generator_dict[self.name](key_to_use, (1, numSamples, self.dim)) + self.mcmc_info["offset"][None, None, :]
 
     def _get_samples(self, key, states, numSamples=1000):
 
@@ -80,7 +79,7 @@ class Sampler:
             newKeys = jax.random.split(carry[1], 3)
             newStates = self.updateProposer(newKeys[0], states.shape[0], self.mcmc_info)
 
-            P = jax.vmap(lambda x, y: jnp.exp(self.latent_space_prob(x) - self.latent_space_prob(y)))(newStates, carry[0])
+            P = jax.vmap(lambda x, y: jnp.exp(self.latent_space_prob(x, self.mcmc_info["offset"]) - self.latent_space_prob(y, self.mcmc_info["offset"])))(newStates, carry[0])
             accepted = jax.random.bernoulli(newKeys[1], P).reshape((-1,))
 
             # Bookkeeping

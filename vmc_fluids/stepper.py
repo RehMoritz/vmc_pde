@@ -102,7 +102,7 @@ class AdaptiveHeun:
             y = yInitial + dy1
             k01, _ = f(y, t + 0.5 * dt, **rhsArgs, intStep=3)
             y += 0.5 * dt * k01
-            k11, _ = f(y, t + dt, **rhsArgs, intStep=4)
+            k11, info = f(y, t + dt, **rhsArgs, intStep=4)
             dy1 += 0.25 * dt * (k01 + k11)
 
             # compute deviation
@@ -126,4 +126,4 @@ class AdaptiveHeun:
 
         self.dt = dt
 
-        return yInitial + dy1, realDt, {}
+        return yInitial + dy1, realDt, info
