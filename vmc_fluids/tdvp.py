@@ -19,21 +19,20 @@ from functools import partial
 @dataclass
 class TDVP:
     useSNR: bool = False
-    snrTol: float = 0.
-    svdTol: float = 1e-5
+    snrTol: float = 1e1
+    svdTol: float = 1e-11
     diagonalShift: float = 0
-    diagonalizeOnDevice: bool = True
+    diagonalizeOnDevice: bool = False
 
     def __post_init__(self):
         # pmap'd member functions
         self.subtract_helper_Eloc = global_defs.pmap_for_my_devices(lambda x, y: x - y, in_axes=(0, None))
         self.subtract_helper_grad = global_defs.pmap_for_my_devices(lambda x, y: x - y, in_axes=(0, None))
-        self.get_EO = global_defs.pmap_for_my_devices(lambda Eloc, grad: jnp.multiply(Eloc[:, None], jnp.conj(grad)),
-                                                      in_axes=(0, 0), static_broadcasted_argnums=())
+        self.get_EO = global_defs.pmap_for_my_devices(lambda Eloc, grad: Eloc[:, None] * grad, in_axes=(0, 0))
+        self.get_expGrad = global_defs.pmap_for_my_devices(lambda logProb, grad: logProb[:, None] * grad, in_axes=(0, 0))
         self.transform_EO = global_defs.pmap_for_my_devices(lambda eo, v: jnp.matmul(eo, jnp.conj(v)), in_axes=(0, None))
-        self.compute_variance = global_defs.pmap_for_my_devices(lambda samples: jnp.mean(jax.vmap(lambda sample: sample**2)(samples)))
 
-    def get_tdvp_equation(self, Eloc, gradients):
+    def get_tdvp_equation(self, Eloc, gradients, logProbs):
         self.ElocMean = mpi.global_mean(Eloc)
         self.ElocMeanAbs = mpi.global_mean(jnp.abs(Eloc))
         self.ElocVar = jnp.real(mpi.global_variance(Eloc))
@@ -44,6 +43,7 @@ class TDVP:
         EOdata = self.get_EO(Eloc, gradients)
         self.F0 = mpi.global_mean(EOdata)
         self.S0 = mpi.global_covariance(gradients)
+        self.SExp = mpi.global_covariance(self.get_expGrad(logProbs, gradients))
         S, F = self.S0, self.F0
 
         if self.diagonalShift > 1e-10:
@@ -70,9 +70,9 @@ class TDVP:
         self.rhoVar = mpi.global_variance(EOdata)
         self.snr = jnp.sqrt(jnp.abs(mpi.globNumSamples / (self.rhoVar / (jnp.conj(self.VtF) * self.VtF) - 1.)))
 
-    def solve(self, Eloc, gradients):
+    def solve(self, Eloc, gradients, logProbs):
         # Get TDVP equation from MC data
-        self.S, F, Fdata = self.get_tdvp_equation(Eloc, gradients)
+        self.S, F, Fdata = self.get_tdvp_equation(Eloc, gradients, logProbs)
         F.block_until_ready()
 
         # Transform TDVP equation to eigenbasis
@@ -89,7 +89,9 @@ class TDVP:
             regularizer *= 1. / (1. + (self.snrTol / self.snr)**6)
 
         update = jnp.real(jnp.dot(self.V, (self.invEv * regularizer * self.VtF)))
-        return update, jnp.linalg.norm(self.S.dot(update) - F) / jnp.linalg.norm(F)
+
+        tdvp_error = 1 + (update @ self.S0 @ update - 2 * self.F0 @ update) / jnp.mean(Eloc**2)
+        return update, jnp.linalg.norm(self.S.dot(update) - F) / jnp.linalg.norm(F), tdvp_error
 
     def __call__(self, netParameters, t, psi, evolutionEq, **rhsArgs):
         numSamples = rhsArgs["numSamples"]
@@ -119,17 +121,31 @@ class TDVP:
 
         # Evaluate local energy
         start_timing(outp, "compute Eloc")
-        Eloc, sampleGradients = evolutionEq(psi, sampleConfigs, t)
+        Eloc, sampleGradients, logProbs = evolutionEq(psi, sampleConfigs, t)
+        # sampleGradients = jnp.clip(sampleGradients, a_min=-100, a_max=100)
         stop_timing(outp, "compute Eloc", waitFor=Eloc)
 
         start_timing(outp, "solve TDVP eqn.")
-        update, solverResidual = self.solve(Eloc, sampleGradients)
+        update, self.solverResidual, self.tdvp_error = self.solve(Eloc, sampleGradients, logProbs)
         stop_timing(outp, "solve TDVP eqn.")
+
+        # import sys
+        # jnp.set_printoptions(threshold=sys.maxsize)
+        # print(sampleGradients[0, 0, :])
+        # if jnp.any(jnp.isnan(update)):
+        #     print(sampleGradients)
+        #     print(self.S0)
+        #     print(self.F0)
 
         if outp is not None:
             outp.add_timing("MPI communication", mpi.get_communication_time())
 
         info = {}
-        info["variance"] = self.compute_variance(sampleConfigs - jnp.mean(sampleConfigs, axis=(0, 1), keepdims=True))
+        mean = jnp.mean(sampleConfigs, axis=(0, 1), keepdims=True)
+        info["variance"] = jnp.sum((sampleConfigs - mean)**2)
+        info["x2"] = jnp.mean(jnp.sum((sampleConfigs - mean)**2, axis=-1))
+        info["x4"] = jnp.mean(jnp.sum((sampleConfigs - mean)**4, axis=-1))
+        info["x6"] = jnp.mean(jnp.sum((sampleConfigs - mean)**6, axis=-1))
+        info["max_grad"] = jnp.max(Eloc)
 
         return update, info

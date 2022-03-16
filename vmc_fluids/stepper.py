@@ -67,7 +67,8 @@ class AdaptiveHeun:
             dy1 += 0.25 * dt * (k01 + k11)
 
             # compute deviation
-            updateDiff = normFunction(dy1 - dy0, f.S0)
+            # updateDiff = normFunction(dy1 - dy0, f.S0)
+            updateDiff = normFunction(dy1 - dy0, f.SExp)
             fe = self.tolerance / updateDiff
 
             if 0.2 > 0.9 * fe**0.33333:

@@ -62,7 +62,7 @@ class EvolutionEquation:
         logProbs, coord_grads, param_grads = vState(configs, mode="eval_coordgrads")
         # time_grads = self.eqParams[self.name]["D"] * (jnp.sum(coord_grads**2, axis=-1) + jnp.sum(vState.hessian_diag(configs), axis=(-1,)))
         time_grads = self.eqParams[self.name]["D"] * (jnp.sum(coord_grads**2, axis=-1) + jnp.einsum('abii -> ab', vState.hessian(configs)))
-        return time_grads, param_grads
+        return time_grads, param_grads, logProbs
 
     def _diffusion_eq_wDrift(self, vState, configs, t):
         logProbs, coord_grads, param_grads = vState(configs, mode="eval_coordgrads")
@@ -71,22 +71,22 @@ class EvolutionEquation:
         time_grads = (self.eqParams[self.name]["D"] * (jnp.sum(coord_grads**2, axis=-1) + jnp.einsum('abii -> ab', vState.hessian(configs)))
                       + self.eqParams[self.name]["mu"] * jnp.sum(coord_grads, axis=-1))
 
-        return time_grads, param_grads
+        return time_grads, param_grads, logProbs
 
     def _advection(self, vState, configs, t):
         logProbs, coord_grads, param_grads = vState(configs, mode="eval_coordgrads")
         time_grads = self._get_advection_difFreeVelocity_jitd(coord_grads, configs, t, partial(self.eqParams[self.name]["vel_field"], self.eqParams[self.name]["params"]))
 
-        arg = jnp.argmax(time_grads)
-        print("New Configuration")
+        # arg = jnp.argmax(time_grads)
+        # print("New Configuration")
         # print(arg)
-        print(configs[0, arg])
+        # print(configs[0, arg])
         # print(time_grads[0, arg])
         # print(jnp.exp(logProbs[0, arg]) * time_grads[0, arg])
         # print(jnp.exp(logProbs[0, arg]) * coord_grads[0, arg])
-        print(jnp.exp(logProbs[0, arg]))
+        # print(jnp.exp(logProbs[0, arg]))
         # exit()
-        return time_grads, param_grads
+        return time_grads, param_grads, logProbs
 
 
 if __name__ == "__main__":
