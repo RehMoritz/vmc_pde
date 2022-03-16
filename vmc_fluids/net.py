@@ -23,10 +23,10 @@ class SingleTrafo(nn.Module):
     def __call__(self, x):
         for feat in self.intmediate:
             x = nn.Dense(features=feat, use_bias=self.use_bias,
-                         kernel_init=partial(uniform_init, scale=1e-3), bias_init=self.bias_init)(x)
+                         kernel_init=partial(uniform_init, scale=1e-0), bias_init=self.bias_init)(x)
             # x = 1 + nn.elu(x)
             # x = nn.relu(x)
-            x = 1 + nn.tanh(x)
+            x = nn.tanh(x)
         return self.alpha * nn.tanh(nn.Dense(features=self.width, use_bias=self.use_bias,
                                              kernel_init=self.kernel_init, bias_init=self.bias_init)(x))
         # return nn.Dense(features=self.width, use_bias=self.use_bias)(x)
@@ -37,6 +37,7 @@ class SingleBlock(nn.Module):
     ind_down: list
     intmediate: tuple = (3,)
     pt_sym: bool = False
+    jac_eq_1: bool = False
     different_add: bool = True
     global_change: bool = False
 
@@ -59,13 +60,21 @@ class SingleBlock(nn.Module):
                 v1 = u1 * jnp.exp(self.s2(u2) + self.s2(-u2)) + (self.t2(u2) - self.t2(-u2))
                 v2 = u2 * jnp.exp(self.s1(v1) + self.s1(-v1)) + (self.t1(v1) - self.t1(-v1))
             else:
+
                 s2_u2 = self.s2(u2)
-                if self.different_add:
+                if self.jac_eq_1:
+                    v1 = u1 + s2_u2
+                    s2_u2 = jnp.zeros_like(s2_u2)
+                elif self.different_add:
                     v1 = u1 * jnp.exp(s2_u2) + self.t2(u2)
                 else:
                     v1 = u1 * jnp.exp(s2_u2) + s2_u2
+
                 s1_v1 = self.s1(v1)
-                if self.different_add:
+                if self.jac_eq_1:
+                    v2 = u2 + s1_v1
+                    s1_v1 = jnp.zeros_like(s1_v1)
+                elif self.different_add:
                     v2 = u2 * jnp.exp(s1_v1) + self.t1(v1)
                 else:
                     v2 = u2 * jnp.exp(s1_v1) + s1_v1
@@ -88,12 +97,19 @@ class SingleBlock(nn.Module):
                 u1 = (v1 - (self.t2(u2) - self.t2(-u2))) * jnp.exp(-(self.s2(u2) + self.s2(-u2)))
             else:
                 s1_v1 = self.s1(v1)
-                if self.different_add:
+                if self.jac_eq_1:
+                    u2 = v2 - s1_v1
+                    s1_v1 = jnp.zeros_like(s1_v1)
+                elif self.different_add:
                     u2 = (v2 - self.t1(v1)) * jnp.exp(-s1_v1)
                 else:
                     u2 = (v2 - s1_v1) * jnp.exp(-s1_v1)
+
                 s2_u2 = self.s2(u2)
-                if self.different_add:
+                if self.jac_eq_1:
+                    u1 = v1 - s2_u2
+                    s2_u2 = jnp.zeros_like(s2_u2)
+                elif self.different_add:
                     u1 = (v1 - self.t2(u2)) * jnp.exp(-s2_u2)
                 else:
                     u1 = (v1 - s2_u2) * jnp.exp(-s2_u2)
