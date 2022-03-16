@@ -30,15 +30,15 @@ def latent_space_dist_paper(x, offset):
 
 
 # Initializing the net
-initKey = 0
-sampleKey = 0
+initKey = 1
+sampleKey = 1
 
 mode_dict = {"fluidpaper": {"offset": jnp.ones(2) * 0.25, "dim": 2, "latent_space_prob": latent_space_dist_paper, "mcmcbound": 0.25, "gridbound": 1., "symgrid": False, "evolution_type": "advection_paper"},
              "harmonicOsc": {"offset": jnp.ones(2) * 1, "dim": 2, "latent_space_prob": sampler.unit_gauss, "mcmcbound": 0.25, "gridbound": 8., "symgrid": True, "evolution_type": "advection_hamiltonian"},
              "diffusion": {"offset": jnp.zeros(2), "dim": 2, "latent_space_prob": sampler.unit_gauss, "mcmcbound": 1, "gridbound": 10., "symgrid": True, "evolution_type": "diffusion"}}
-mode = "harmonicOsc"
+mode = "fluidpaper"
 
-wdir = "output/"
+wdir = "output/" + mode + "/"
 if mpi_wrapper.rank == 0:
     try:
         os.makedirs(wdir)
@@ -60,7 +60,8 @@ evolution_type = mode_dict[mode]["evolution_type"]
 sampler = sampler.Sampler(dim=dim, numChains=30, latent_space_prob=latent_space_prob, mcmc_info={"offset": offset, "bound": mcmcbound})
 
 # set up variational state
-vState = var_state.VarState(sampler, dim, initKey, 15, pt_sym=False, intmediate=(3,) * 0, offset=offset)
+print("Identifier 0")
+vState = var_state.VarState(sampler, dim, initKey, 20, pt_sym=False, intmediate=(2,) * 1, offset=offset)
 print(f"Number of Model parameters: {vState.numParameters}")
 
 
@@ -92,18 +93,17 @@ if dim < 4:
     integral = vState.integrate(grid)
     print("Integral value:", integral)
 
-
 # time evolution
-dt = 1e-2
+dt = 3e-3
 tol = 1e-2
 maxStep = dt
-# myStepper = stepper.Euler(timeStep=dt)
 myStepper = stepper.AdaptiveHeun(timeStep=dt, tol=tol, maxStep=maxStep)
+# myStepper = stepper.FixedStepper(timeStep=dt, mode='Heun')
 tdvpEq = tdvp.TDVP()
 evolutionEq = evolutionEq.EvolutionEquation(name=evolution_type)
-numSamples = 100000
+numSamples = 5000
 
-# visualization.plot_vectorfield(grid, evolutionEq._velocity_field)
+# visualization.plot_vectorfield(grid, evolutionEq)
 # plt.show()
 
 # states = vState.sample(2000000)
@@ -111,14 +111,14 @@ numSamples = 100000
 # plt.show()
 
 t = 0
-t_end = 1
-plot_every = 0.001
+t_end = 5.0
+plot_every = 0.1
 
 visualization.plot(vState, grid, proj=True)
 plt.savefig(wdir + f't_{t:.3f}.pdf')
 plt.show()
 
-infos = {"times": [], "ev": [], "snr": [], "solver_res": []}
+infos = {"times": [], "ev": [], "snr": [], "solver_res": [], "tdvp_error": []}
 while t < t_end + dt:
     dp, dt, info = myStepper.step(0, tdvpEq, vState.get_parameters(), evolutionEq=evolutionEq, psi=vState, numSamples=numSamples, normFunction=norm_fun)
     vState.set_parameters(dp)
@@ -135,14 +135,18 @@ while t < t_end + dt:
     infos["ev"].append(tdvpEq.ev)
     infos["snr"].append(tdvpEq.snr)
     infos["solver_res"].append(tdvpEq.solverResidual)
+    infos["tdvp_error"].append(tdvpEq.tdvp_error)
 
-    if np.abs(np.around(t, decimals=5) % 0.25) < 0.05 * dt:
+    if t % plot_every >= (t + dt) % plot_every or dt >= plot_every:
         if dim == 2:
             integral = vState.integrate(grid)
             print("Integral value:", integral)
-            visualization.plot(vState, grid)
-            # plt.savefig(f't_{t:.1f}.pdf')
-            plt.show()
+            # visualization.plot(vState, grid)
+            # plt.show()
+
+            visualization.plot(vState, grid, proj=True)
+            plt.savefig(wdir + f't_{t:.3f}.pdf')
+            # plt.show()
 
         print(vState.net.apply(vState.params, jnp.zeros(2,), inv=True))
 
@@ -172,6 +176,20 @@ plt.figure()
 plt.plot(np.array(infos["times"]), np.array(infos["solver_res"]))
 plt.grid()
 plt.ylabel('Residual')
+plt.xlabel(r'$t$')
+plt.yscale('log')
+
+plt.figure()
+plt.plot(np.array(infos["times"]), np.array(infos["tdvp_error"]))
+plt.grid()
+plt.ylabel('TDVP Error')
+plt.xlabel(r'$t$')
+plt.yscale('log')
+
+plt.figure()
+plt.plot(np.array(infos["times"])[:-1], np.diff(np.array(infos["times"])))
+plt.grid()
+plt.ylabel(r'$\Delta t$')
 plt.xlabel(r'$t$')
 plt.yscale('log')
 
