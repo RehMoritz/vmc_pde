@@ -19,7 +19,7 @@ from functools import partial
 @dataclass
 class TDVP:
     useSNR: bool = False
-    snrTol: float = 1e1
+    snrTol: float = 2e0
     svdTol: float = 1e-11
     diagonalShift: float = 0
     diagonalizeOnDevice: bool = False
@@ -68,7 +68,7 @@ class TDVP:
         EOdata = self.transform_EO(EOdata, self.V)
         EOdata.block_until_ready()
         self.rhoVar = mpi.global_variance(EOdata)
-        self.snr = jnp.sqrt(jnp.abs(mpi.globNumSamples / (self.rhoVar / (jnp.conj(self.VtF) * self.VtF) - 1.)))
+        self.snr = jnp.sqrt(jnp.abs(mpi.globNumSamples * (jnp.conj(self.VtF) * self.VtF) / self.rhoVar))
 
     def solve(self, Eloc, gradients, logProbs):
         # Get TDVP equation from MC data
@@ -132,20 +132,31 @@ class TDVP:
         # import sys
         # jnp.set_printoptions(threshold=sys.maxsize)
         # print(sampleGradients[0, 0, :])
-        # if jnp.any(jnp.isnan(update)):
-        #     print(sampleGradients)
-        #     print(self.S0)
-        #     print(self.F0)
+        if jnp.any(jnp.isnan(update)):
+            print(sampleGradients)
+            print(self.S0)
+            print(self.F0)
+            print("nan encountered. Exitting.")
+            exit()
+
+        # print(sampleGradients)
+        # print(logProbs)
+        # print(Eloc)
+        # print(self.S0)
+        # print(self.F0)
+        # print(update)
+        # exit()
 
         if outp is not None:
             outp.add_timing("MPI communication", mpi.get_communication_time())
 
         info = {}
         mean = jnp.mean(sampleConfigs, axis=(0, 1), keepdims=True)
-        info["variance"] = jnp.sum((sampleConfigs - mean)**2)
-        info["x2"] = jnp.mean(jnp.sum((sampleConfigs - mean)**2, axis=-1))
-        info["x4"] = jnp.mean(jnp.sum((sampleConfigs - mean)**4, axis=-1))
-        info["x6"] = jnp.mean(jnp.sum((sampleConfigs - mean)**6, axis=-1))
+        info["x1"] = mean[0, 0]
+        info["covar"] = jnp.cov(sampleConfigs[0, ...].T, ddof=0)
+        info["entropy"] = -jnp.mean(logProbs)
+        for m in [3, 4, 5, 6]:
+            info[f"x{m}"] = jnp.mean((sampleConfigs - mean)**m, axis=(0, 1))
         info["max_grad"] = jnp.max(Eloc)
 
         return update, info

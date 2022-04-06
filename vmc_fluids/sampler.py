@@ -16,6 +16,25 @@ from jax.tree_util import tree_flatten, tree_unflatten
 import net
 
 
+def cos_dist(x, offset):
+    r = jnp.min(jnp.array([1, 4 * jnp.sqrt(jnp.sum((x - offset)**2))]))
+    return jnp.log(0.5 * (1 + jnp.cos(jnp.pi * r)))
+
+
+def student_t_pdf(x, offset=jnp.zeros(2), nu=1):
+    p = x.shape[0]
+    # return jnp.log(jnp.exp(jax.scipy.special.gammaln((nu + p) / 2)) / (jnp.exp(jax.scipy.special.gammaln(nu / 2)) * (nu * jnp.pi)**(p / 2)) *
+    #                (1 + jnp.sum((x - offset)**2) / nu)**(-(nu + p) / 2))
+    return (jax.scipy.special.gammaln((nu + p) / 2) - jax.scipy.special.gammaln(nu / 2) - p / 2 * jnp.log(nu * jnp.pi) -
+            (nu + p) / 2 * jnp.log(1 + jnp.sum((x - offset)**2) / nu))
+
+
+def student_t_sample(key, shape=(), nu=1):
+    u = np.random.chisquare(nu, size=(shape[1],))
+    y = jax.random.normal(key, shape=shape)
+    return jnp.sqrt(nu / u)[None, ..., None] * y
+
+
 def unit_gauss(x, offset, sigma=1e0):
     return - jnp.log(jnp.sqrt(2 * jnp.pi * sigma**2)) * x.shape[0] - 0.5 * jnp.sum((x - offset)**2) / sigma**2
 
@@ -45,8 +64,8 @@ class Sampler:
         self.key = jax.random.PRNGKey(self.key)
         self.key = jax.random.split(self.key, mpi_wrapper.commSize)[mpi_wrapper.rank]
         self.key = jax.random.split(self.key, global_defs.device_count())[0]
-        self.exact_samples = self.latent_space_prob in [unit_gauss]
-        self.exact_sample_generator_dict = {"Gauss": jax.random.normal}
+        self.exact_samples = self.latent_space_prob in [unit_gauss, student_t_pdf]
+        self.exact_sample_generator_dict = {"Gauss": jax.random.normal, "student_t": student_t_sample}
         self.states = None
 
         self._get_samples_jitd = {}
