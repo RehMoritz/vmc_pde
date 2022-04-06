@@ -51,7 +51,7 @@ class AdaptiveHeun:
         while fe < 1.:
 
             y = yInitial.copy()
-            k0, _ = f(y, t, **rhsArgs, intStep=0)
+            k0, info = f(y, t, **rhsArgs, intStep=0)
             y += dt * k0
             k1, _ = f(y, t + dt, **rhsArgs, intStep=1)
             dy0 = 0.5 * dt * (k0 + k1)
@@ -63,7 +63,7 @@ class AdaptiveHeun:
             y = yInitial + dy1
             k01, _ = f(y, t + 0.5 * dt, **rhsArgs, intStep=3)
             y += 0.5 * dt * k01
-            k11, info = f(y, t + dt, **rhsArgs, intStep=4)
+            k11, _ = f(y, t + dt, **rhsArgs, intStep=4)
             dy1 += 0.25 * dt * (k01 + k11)
 
             # compute deviation
