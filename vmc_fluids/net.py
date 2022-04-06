@@ -36,7 +36,6 @@ class SingleBlock(nn.Module):
     ind_up: list
     ind_down: list
     intmediate: tuple = (3,)
-    pt_sym: bool = False
     jac_eq_1: bool = False
     different_add: bool = True
     global_change: bool = False
@@ -56,28 +55,23 @@ class SingleBlock(nn.Module):
             u1 = x[self.ind_up]
             u2 = x[self.ind_down]
 
-            if self.pt_sym:
-                v1 = u1 * jnp.exp(self.s2(u2) + self.s2(-u2)) + (self.t2(u2) - self.t2(-u2))
-                v2 = u2 * jnp.exp(self.s1(v1) + self.s1(-v1)) + (self.t1(v1) - self.t1(-v1))
+            s2_u2 = self.s2(u2)
+            if self.jac_eq_1:
+                v1 = u1 + s2_u2
+                s2_u2 = jnp.zeros_like(s2_u2)
+            elif self.different_add:
+                v1 = u1 * jnp.exp(s2_u2) + self.t2(u2)
             else:
+                v1 = u1 * jnp.exp(s2_u2) + s2_u2
 
-                s2_u2 = self.s2(u2)
-                if self.jac_eq_1:
-                    v1 = u1 + s2_u2
-                    s2_u2 = jnp.zeros_like(s2_u2)
-                elif self.different_add:
-                    v1 = u1 * jnp.exp(s2_u2) + self.t2(u2)
-                else:
-                    v1 = u1 * jnp.exp(s2_u2) + s2_u2
-
-                s1_v1 = self.s1(v1)
-                if self.jac_eq_1:
-                    v2 = u2 + s1_v1
-                    s1_v1 = jnp.zeros_like(s1_v1)
-                elif self.different_add:
-                    v2 = u2 * jnp.exp(s1_v1) + self.t1(v1)
-                else:
-                    v2 = u2 * jnp.exp(s1_v1) + s1_v1
+            s1_v1 = self.s1(v1)
+            if self.jac_eq_1:
+                v2 = u2 + s1_v1
+                s1_v1 = jnp.zeros_like(s1_v1)
+            elif self.different_add:
+                v2 = u2 * jnp.exp(s1_v1) + self.t1(v1)
+            else:
+                v2 = u2 * jnp.exp(s1_v1) + s1_v1
 
             result = jnp.zeros_like(x)
             result = result.at[self.ind_up].set(v1)
@@ -92,27 +86,23 @@ class SingleBlock(nn.Module):
             v1 = x[self.ind_up]
             v2 = x[self.ind_down]
 
-            if self.pt_sym:
-                u2 = (v2 - (self.t1(v1) - self.t1(-v1))) * jnp.exp(-(self.s1(v1) + self.s1(-v1)))
-                u1 = (v1 - (self.t2(u2) - self.t2(-u2))) * jnp.exp(-(self.s2(u2) + self.s2(-u2)))
+            s1_v1 = self.s1(v1)
+            if self.jac_eq_1:
+                u2 = v2 - s1_v1
+                s1_v1 = jnp.zeros_like(s1_v1)
+            elif self.different_add:
+                u2 = (v2 - self.t1(v1)) * jnp.exp(-s1_v1)
             else:
-                s1_v1 = self.s1(v1)
-                if self.jac_eq_1:
-                    u2 = v2 - s1_v1
-                    s1_v1 = jnp.zeros_like(s1_v1)
-                elif self.different_add:
-                    u2 = (v2 - self.t1(v1)) * jnp.exp(-s1_v1)
-                else:
-                    u2 = (v2 - s1_v1) * jnp.exp(-s1_v1)
+                u2 = (v2 - s1_v1) * jnp.exp(-s1_v1)
 
-                s2_u2 = self.s2(u2)
-                if self.jac_eq_1:
-                    u1 = v1 - s2_u2
-                    s2_u2 = jnp.zeros_like(s2_u2)
-                elif self.different_add:
-                    u1 = (v1 - self.t2(u2)) * jnp.exp(-s2_u2)
-                else:
-                    u1 = (v1 - s2_u2) * jnp.exp(-s2_u2)
+            s2_u2 = self.s2(u2)
+            if self.jac_eq_1:
+                u1 = v1 - s2_u2
+                s2_u2 = jnp.zeros_like(s2_u2)
+            elif self.different_add:
+                u1 = (v1 - self.t2(u2)) * jnp.exp(-s2_u2)
+            else:
+                u1 = (v1 - s2_u2) * jnp.exp(-s2_u2)
 
             result = jnp.zeros_like(x)
             result = result.at[self.ind_up].set(u1)
@@ -127,22 +117,13 @@ class SingleBlock(nn.Module):
 class INN(nn.Module):
     inds_up: list
     inds_down: list
-    pt_sym: bool = False
-    coordinate_transform: callable = lambda x, inv=False: x
-    coordinate_transform_jac: callable = lambda x, inv=False: 0
     intmediate: tuple = (3,)
-    offset: any = jnp.zeros(2)
-    use_offset: float = 1.
 
     def setup(self):
-        self.blocks = [SingleBlock(ind_up, ind_down, intmediate=self.intmediate, pt_sym=self.pt_sym) for ind_up, ind_down in zip(self.inds_up, self.inds_down)]
+        self.blocks = [SingleBlock(ind_up, ind_down, intmediate=self.intmediate) for ind_up, ind_down in zip(self.inds_up, self.inds_down)]
 
     def __call__(self, x, inv=False):
         log_jac = 0
-
-        x = x - self.offset * self.use_offset
-        x = self.coordinate_transform(x)
-        log_jac += self.coordinate_transform_jac(x)
 
         if not inv:
             for block in self.blocks:
@@ -153,25 +134,7 @@ class INN(nn.Module):
                 x, log_jac_block = block(x, inv=inv)
                 log_jac += log_jac_block
 
-        log_jac += self.coordinate_transform_jac(x, inv=True)
-        x = self.coordinate_transform(x, inv=True)
-        x = x + self.offset * self.use_offset
-
         return x, log_jac
-
-    # def coordinate_transform(self, x, inv=False):
-    #     if inv:
-    #         # r, phi = x[0], x[1]
-    #         # return r * jnp.array([jnp.cos(phi), jnp.sin(phi)])
-    #         r, y_by_x = x[0], x[1]
-    #         return r * jnp.array([1 / jnp.sqrt(y_by_x**2 + 1), y_by_x / jnp.sqrt(y_by_x**2 + 1)])
-    #     else:
-    #         # r = jnp.sqrt(jnp.sum(x**2))
-    #         # phi = jax.lax.cond(x[1] > 0, lambda x: jnp.arccos(jnp.nan_to_num(x[0] / r)), lambda x: - jnp.arccos(jnp.nan_to_num(x[0] / r)), x)
-    #         # return jnp.array([r, phi])
-    #         r = jnp.sqrt(jnp.sum(x**2))
-    #         y_by_x = jnp.nan_to_num(x[1] / x[0])
-    #         return jnp.array([r, y_by_x])
 
 
 class SanityINN(nn.Module):
@@ -181,7 +144,7 @@ class SanityINN(nn.Module):
     inds_up: list
     inds_down: list
     widths: tuple = (4,)
-    pt_sym: bool = False
+    intmediate: bool = False
 
     @nn.compact
     def __call__(self, x, inv=False):

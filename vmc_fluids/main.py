@@ -59,7 +59,7 @@ sampler = sampler.Sampler(dim=dim, numChains=30, latent_space_prob=latent_space_
 
 # set up variational state
 print("Identifier -3")
-vState = var_state.VarState(sampler, dim, initKey, 3, pt_sym=False, intmediate=(2,) * 0, offset=offset)
+vState = var_state.VarState(sampler, dim, initKey, 3, intmediate=(2,) * 0)
 print(f"Number of Model parameters: {vState.numParameters}")
 
 
