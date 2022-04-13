@@ -29,7 +29,7 @@ def plot_samples(coords, lim=6):
 
 def _velocity_field_hamiltonian(coord, evolParams):
     """returns dx/dt = p, dp/dt = -x"""
-    def H(x, coupled=True):
+    def H(x, coupled=False):
         if coupled:
             xs = x[0::2]
             ps = x[1::2]
@@ -52,7 +52,6 @@ def _velocity_field_fluiddynpaper(coord, parameters):
 
 
 def update_fun_phaseSpace(coord, parameters, vel_field, dt, key):
-    warnings.warn('Make sure that diffusion works as intended.')
     mask = jnp.zeros_like(coord)
     mask = mask.at[1::2].set(1.)
     v_adv = vel_field(coord, parameters)
@@ -62,17 +61,16 @@ def update_fun_phaseSpace(coord, parameters, vel_field, dt, key):
 
 
 def update_fun_Diff(coord, parameters, vel_field, dt, key):
-    warnings.warn('Make sure that diffusion works as intended.')
     v_diff = jnp.sqrt(2 / dt) * jax.random.normal(key, shape=coord.shape)
     return parameters["D"] * v_diff
 
 
 def integrate_single_coord(coord, dt, parameters, vel_field, update_fun, key):
     keys = jax.random.split(key, 4)
-    k1 = update_fun(coord, parameters, vel_field, dt, keys[0])
-    k2 = update_fun(coord + dt * 0.5 * k1, parameters, vel_field, dt, keys[1])
-    k3 = update_fun(coord + dt * 0.5 * k2, parameters, vel_field, dt, keys[2])
-    k4 = update_fun(coord + dt * k3, parameters, vel_field, dt, keys[3])
+    k1 = update_fun(coord, parameters, vel_field, dt / 6, keys[0])
+    k2 = update_fun(coord + dt * 0.5 * k1, parameters, vel_field, dt / 3, keys[1])
+    k3 = update_fun(coord + dt * 0.5 * k2, parameters, vel_field, dt / 3, keys[2])
+    k4 = update_fun(coord + dt * k3, parameters, vel_field, dt / 6, keys[3])
     return coord + dt * (k1 + 2. * k2 + 2. * k3 + k4) / 6.
 
 
