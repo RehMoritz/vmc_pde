@@ -7,6 +7,7 @@ import numpy as np
 import flax.linen as nn
 from dataclasses import dataclass
 from functools import partial
+import warnings
 
 import global_defs
 import mpi_wrapper
@@ -21,22 +22,16 @@ def cos_dist(x, offset):
     return jnp.log(0.5 * (1 + jnp.cos(jnp.pi * r)))
 
 
-def student_t_pdf(x, offset=jnp.zeros(2), nu=1):
-    p = x.shape[0]
-    # return jnp.log(jnp.exp(jax.scipy.special.gammaln((nu + p) / 2)) / (jnp.exp(jax.scipy.special.gammaln(nu / 2)) * (nu * jnp.pi)**(p / 2)) *
-    #                (1 + jnp.sum((x - offset)**2) / nu)**(-(nu + p) / 2))
-    return (jax.scipy.special.gammaln((nu + p) / 2) - jax.scipy.special.gammaln(nu / 2) - p / 2 * jnp.log(nu * jnp.pi) -
-            (nu + p) / 2 * jnp.log(1 + jnp.sum((x - offset)**2) / nu))
+def gauss_sample(key, dist_params, numSamples):
+    return jax.random.multivariate_normal(key, dist_params["mu"], dist_params["S"], (1, numSamples))
 
 
-def student_t_sample(key, shape=(), nu=1):
-    u = np.random.chisquare(nu, size=(shape[1],))
-    y = jax.random.normal(key, shape=shape)
-    return jnp.sqrt(nu / u)[None, ..., None] * y
-
-
-def unit_gauss(x, offset, sigma=1e0):
-    return - jnp.log(jnp.sqrt(2 * jnp.pi * sigma**2)) * x.shape[0] - 0.5 * jnp.sum((x - offset)**2) / sigma**2
+def student_t_sample(key, dist_params, numSamples):
+    # warnings.warn('Chisquare samples use same seed.')
+    nu = jnp.exp(dist_params["dist_params"][0]) + 1e0
+    u = np.random.chisquare(nu, size=(numSamples,))
+    y = jax.random.multivariate_normal(key, dist_params["mu"] * 0, dist_params["S"], shape=(1, numSamples))
+    return jnp.sqrt(nu / u)[None, ..., None] * y + dist_params["mu"]
 
 
 def radial_update_prop(key, numChains, mcmc_info):
@@ -56,7 +51,6 @@ class Sampler:
     numChains: int = 1
     dim: int = 2
     name: str = "Gauss"
-    latent_space_prob: callable = unit_gauss
     updateProposer: callable = radial_update_prop
     mcmc_info: any = None
 
@@ -64,8 +58,8 @@ class Sampler:
         self.key = jax.random.PRNGKey(self.key)
         self.key = jax.random.split(self.key, mpi_wrapper.commSize)[mpi_wrapper.rank]
         self.key = jax.random.split(self.key, global_defs.device_count())[0]
-        self.exact_samples = self.latent_space_prob in [unit_gauss, student_t_pdf]
-        self.exact_sample_generator_dict = {"Gauss": jax.random.normal, "student_t": student_t_sample}
+        self.exact_samples = self.name in ["Gauss", "Student_t"]
+        self.exact_sample_generator_dict = {"Gauss": gauss_sample, "Student_t": student_t_sample}
         self.states = None
 
         self._get_samples_jitd = {}
@@ -75,7 +69,7 @@ class Sampler:
         self.states = self.updateProposer(key_to_use, self.numChains, self.mcmc_info)
         self.states = self.states[None, ...]
 
-    def __call__(self, numSamples, multipleOf=1):
+    def __call__(self, numSamples, dist_params, multipleOf=1):
         self.key, key_to_use = jax.random.split(self.key, 2)
 
         if not self.exact_samples:
@@ -89,7 +83,7 @@ class Sampler:
             return self._get_samples_jitd[numSamples](key_to_use, self.states)
 
         else:
-            return self.exact_sample_generator_dict[self.name](key_to_use, (1, numSamples, self.dim)) + self.mcmc_info["offset"][None, None, :]
+            return self.exact_sample_generator_dict[self.name](key_to_use, dist_params, numSamples) + self.mcmc_info["offset"][None, None, :]
 
     def _get_samples(self, key, states, numSamples=1000):
 

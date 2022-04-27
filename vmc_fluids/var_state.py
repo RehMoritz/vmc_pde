@@ -9,18 +9,18 @@ from dataclasses import dataclass
 from functools import partial
 
 import global_defs
+import util
+import net
 
 from jax.tree_util import tree_flatten, tree_unflatten
-
-import net
 
 
 class VarState:
 
-    def __init__(self, sampler, dim, *args, **kwargs):
+    def __init__(self, sampler, dim, *args, network_args={}):
         self.sampler = sampler
         self.dim = dim
-        self.net, self.params = self.init_net(*args, **kwargs)
+        self.net, self.params = self.init_net(network_args, *args)
 
         self.paramShapes = [(p.size, p.shape) for p in tree_flatten(self.params)[0]]
         self.netTreeDef = jax.tree_util.tree_structure(self.params)
@@ -31,7 +31,7 @@ class VarState:
         self._grads_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(jax.value_and_grad(lambda coords, params: self.real_space_prob(coords, params), argnums=(0, 1)), in_axes=(0, None)), in_axes=(0, None))
         self._hessian_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(jax.jacrev(jax.jacfwd(lambda coords, params: self.real_space_prob(coords, params), argnums=0), argnums=0), in_axes=(0, None)), in_axes=(0, None))
         self._hessiandiag_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(self._hvp, in_axes=(0, None)), in_axes=(0, None))
-        self._latent_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(lambda coords, params: self.net.apply(params, coords, inv=True)[0], in_axes=(0, None)), in_axes=(0, None))
+        self._latent_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(lambda coords, params: self.net.apply(params, coords, evaluate=False, inv=True), in_axes=(0, None)), in_axes=(0, None))
         self._flatten_tree_jitd = global_defs.pmap_for_my_devices(jax.vmap(self.flatten_tree))
 
     def __call__(self, coords, mode="eval", avg=False):
@@ -79,12 +79,11 @@ class VarState:
         return jax.jvp(f, (coords,), (jnp.ones_like(coords),))[1]
 
     def real_space_prob(self, x, params):
-        z, log_jac = self.net.apply(params, x, inv=False)
-        p_latent_log = self.sampler.latent_space_prob(z, self.sampler.mcmc_info["offset"])
-        return p_latent_log + log_jac
+        return self.net.apply(params, x)
 
     def sample(self, numSamples):
-        latent_space_samples = self.sampler(numSamples)
+        dist_params = {"S": util.build_cov_matrix(self.params["params"]["A"]), "mu": self.params["params"]["mu"], "dist_params": self.params["params"]["dist_params"]}
+        latent_space_samples = self.sampler(numSamples, dist_params)
         return self._latent_coords_jitd(latent_space_samples, self.params)
 
     def average_tree(self, tree, axis=(0, 1)):
@@ -116,7 +115,7 @@ class VarState:
         flat, _ = jax.tree_util.tree_flatten(jax.tree_util.tree_map(lambda x: x.ravel(), tree))
         return jnp.concatenate(flat).ravel()
 
-    def init_net(self, key, depth, **kwargs):
+    def init_net(self, network_args, key, depth, **kwargs):
         key = jax.random.PRNGKey(key)
         inds_up = []
         inds_down = []
@@ -126,7 +125,8 @@ class VarState:
             ind_down = jnp.setdiff1d(jnp.arange(self.dim), ind_up)
             inds_up.append(ind_up)
             inds_down.append(ind_down)
-        mynet = net.INN(inds_up, inds_down, **kwargs)
+        # mynet = net.INN(inds_up, inds_down, **kwargs)
+        mynet = net.INNwProb(inds_up, inds_down, **network_args)
         # mynet = net.SanityINN(inds_up, inds_down)
         params = mynet.init(key, jnp.zeros(self.dim))
         return mynet, params

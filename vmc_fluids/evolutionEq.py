@@ -29,17 +29,17 @@ def _velocity_field_MLPaper(evolParams, coord, t):
 
 def _velocity_field_hamiltonian(evolParams, coord, t):
     """returns dx/dt = p, dp/dt = -x"""
-    def H(x, coupled=True):
+    def H(x, coupled=False):
         if coupled:
             xs = x[0::2]
             ps = x[1::2]
-            return jnp.pi * (evolParams["m"] * evolParams["omega"]**2 / 2 * jnp.sum((xs - jnp.roll(xs, 1))**2)
-                             + jnp.sum(ps**2) / (2. * evolParams["m"])
-                             + evolParams["lam"] * jnp.sum(xs**4))
+            return (evolParams["m"] * evolParams["omega"]**2 / 2 * jnp.sum((xs - jnp.roll(xs, 1))**2)
+                    + jnp.sum(ps**2) / (2. * evolParams["m"])
+                    + evolParams["lam"] * jnp.sum(xs**4))
         else:
-            return jnp.pi * (evolParams["m"] * evolParams["omega"]**2 / 2 * jnp.sum(x[0::2]**2)
-                             + jnp.sum(x[1::2]**2) / (2. * evolParams["m"])
-                             + evolParams["lam"] * jnp.sum(x[0::2]**4))
+            return (evolParams["m"] * evolParams["omega"]**2 / 2 * jnp.sum(x[0::2]**2)
+                    + jnp.sum(x[1::2]**2) / (2. * evolParams["m"])
+                    + evolParams["lam"] * jnp.sum(x[0::2]**4))
     grads = jax.grad(H)(coord)
     mat = jnp.kron(jnp.eye(coord.shape[0] // 2), jnp.array([[0, 1], [-1, 0]]))
     return mat @ grads
@@ -72,7 +72,7 @@ class EvolutionEquation:
                          {"params": {"m": 1.0, "omega": 1.0, "lam": 0.0},
                           "vel_field": _velocity_field_hamiltonian},
                          "advection_hamiltonian_wDiss":
-                         {"params": {"m": 1.0, "omega": 1.0, "T": 1.0, "gamma": 1.0, "lam": 0.2},
+                         {"params": {"m": 1.0, "omega": 1.0, "T": 10.0, "gamma": 1.0, "lam": 0.0},
                           "vel_field": _velocity_field_hamiltonian}
                          }
 
@@ -83,7 +83,6 @@ class EvolutionEquation:
 
     def _diffusion_eq(self, vState, configs, t):
         logProbs, coord_grads, param_grads = vState(configs, mode="eval_coordgrads")
-        # time_grads = self.eqParams[self.name]["D"] * (jnp.sum(coord_grads**2, axis=-1) + jnp.sum(vState.hessian_diag(configs), axis=(-1,)))
         time_grads = self.eqParams[self.name]["D"] * (jnp.sum(coord_grads**2, axis=-1) + jnp.einsum('abii -> ab', vState.hessian(configs)))
         return time_grads, param_grads, logProbs
 
@@ -96,7 +95,6 @@ class EvolutionEquation:
 
     def _diffusion_eq_anisotropic(self, vState, configs, t):
         logProbs, coord_grads, param_grads = vState(configs, mode="eval_coordgrads")
-        # time_grads = self.eqParams[self.name]["D"] * (jnp.sum(coord_grads**2, axis=-1) + jnp.einsum('abii -> ab', vState.hessian(configs)))
         time_grads = (jnp.einsum('abi, ij, abj -> ab', coord_grads, self.eqParams[self.name]["D"], coord_grads) +
                       jnp.einsum('abij, ji -> ab', vState.hessian(configs), self.eqParams[self.name]["D"]))
         return time_grads, param_grads, logProbs
@@ -104,16 +102,6 @@ class EvolutionEquation:
     def _advection(self, vState, configs, t):
         logProbs, coord_grads, param_grads = vState(configs, mode="eval_coordgrads")
         time_grads = self._get_advection_velfield_jitd(coord_grads, configs, t, partial(self.eqParams[self.name]["vel_field"], self.eqParams[self.name]["params"]))
-
-        # arg = jnp.argmax(time_grads)
-        # print("New Configuration")
-        # print(arg)
-        # print(configs[0, arg])
-        # print(time_grads[0, arg])
-        # print(jnp.exp(logProbs[0, arg]) * time_grads[0, arg])
-        # print(jnp.exp(logProbs[0, arg]) * coord_grads[0, arg])
-        # print(jnp.exp(logProbs[0, arg]))
-        # exit()
         return time_grads, param_grads, logProbs
 
     def _advection_wDiss(self, vState, configs, t):
@@ -121,9 +109,11 @@ class EvolutionEquation:
 
         logProbs, coord_grads, param_grads = vState(configs, mode="eval_coordgrads")
         time_grads_adv = self._get_advection_velfield_jitd(coord_grads, configs, t, partial(self.eqParams[self.name]["vel_field"], self.eqParams[self.name]["params"]))
+
         time_grads_diff = (self.eqParams[self.name]["params"]["m"] * self.eqParams[self.name]["params"]["gamma"] * self.eqParams[self.name]["params"]["T"] *
                            (jnp.sum(coord_grads[:, :, 1::2]**2, axis=-1) + jnp.einsum('abii -> ab', vState.hessian(configs)[:, :, 1::2, 1::2])))
-        time_grads_damping = self.eqParams[self.name]["params"]["gamma"] * (logProbs + jnp.sum(configs[:, :, 1::2] * coord_grads[:, :, 1::2], axis=-1))
+        time_grads_damping = self.eqParams[self.name]["params"]["gamma"] * jnp.sum(configs[:, :, 1::2] * coord_grads[:, :, 1::2], axis=-1)
+
         time_grads = time_grads_adv + time_grads_diff + time_grads_damping
 
         return time_grads, param_grads, logProbs

@@ -4,6 +4,36 @@ import flax.linen as nn
 from functools import partial
 
 import global_defs
+import util
+
+
+class Gauss(nn.Module):
+    dim: int = 2
+
+    @nn.compact
+    def __call__(self, x, dist_params):
+        S = dist_params["S"]
+        mu = dist_params["mu"]
+
+        x = x - mu
+        arg = x @ jnp.linalg.inv(S) @ x
+        return - 0.5 * (self.dim * jnp.log(2 * jnp.pi) + jnp.log(jnp.linalg.det(S)) + arg)
+
+
+class Student_t(nn.Module):
+    dim: int = 2
+
+    @nn.compact
+    def __call__(self, x, dist_params):
+        p = x.shape[0]
+
+        S = dist_params["S"]
+        mu = dist_params["mu"]
+        nu = jnp.exp(dist_params["dist_params"][0]) + 1e0
+
+        x = x - mu
+        return (jax.scipy.special.gammaln((nu + p) / 2) - jax.scipy.special.gammaln(nu / 2) - p / 2 * jnp.log(nu * jnp.pi) -
+                (nu + p) / 2 * jnp.log(1 + x @ jnp.linalg.inv(S) @ x / nu))
 
 
 def uniform_init(rng, shape, scale=1.0):
@@ -37,7 +67,8 @@ class SingleBlock(nn.Module):
     ind_down: list
     intmediate: tuple = (3,)
     jac_eq_1: bool = False
-    different_add: bool = True
+    different_add: bool = False
+    no_add: bool = True
     global_change: bool = False
 
     def setup(self):
@@ -61,6 +92,8 @@ class SingleBlock(nn.Module):
                 s2_u2 = jnp.zeros_like(s2_u2)
             elif self.different_add:
                 v1 = u1 * jnp.exp(s2_u2) + self.t2(u2)
+            elif self.no_add:
+                v1 = u1 * jnp.exp(s2_u2)
             else:
                 v1 = u1 * jnp.exp(s2_u2) + s2_u2
 
@@ -70,6 +103,8 @@ class SingleBlock(nn.Module):
                 s1_v1 = jnp.zeros_like(s1_v1)
             elif self.different_add:
                 v2 = u2 * jnp.exp(s1_v1) + self.t1(v1)
+            elif self.no_add:
+                v2 = u2 * jnp.exp(s1_v1)
             else:
                 v2 = u2 * jnp.exp(s1_v1) + s1_v1
 
@@ -92,6 +127,8 @@ class SingleBlock(nn.Module):
                 s1_v1 = jnp.zeros_like(s1_v1)
             elif self.different_add:
                 u2 = (v2 - self.t1(v1)) * jnp.exp(-s1_v1)
+            elif self.no_add:
+                u2 = v2 * jnp.exp(-s1_v1)
             else:
                 u2 = (v2 - s1_v1) * jnp.exp(-s1_v1)
 
@@ -101,6 +138,8 @@ class SingleBlock(nn.Module):
                 s2_u2 = jnp.zeros_like(s2_u2)
             elif self.different_add:
                 u1 = (v1 - self.t2(u2)) * jnp.exp(-s2_u2)
+            elif self.no_add:
+                u1 = v1 * jnp.exp(-s2_u2)
             else:
                 u1 = (v1 - s2_u2) * jnp.exp(-s2_u2)
 
@@ -115,6 +154,10 @@ class SingleBlock(nn.Module):
 
 
 class INN(nn.Module):
+    """
+    An INN that solely does an invertible coordinate transform.
+    It returns the new coordinates and the jacobian determinant associated with the transform.
+    """
     inds_up: list
     inds_down: list
     intmediate: tuple = (3,)
@@ -126,15 +169,51 @@ class INN(nn.Module):
         log_jac = 0
 
         if not inv:
+            # from Real Space -> Latent Space
             for block in self.blocks:
                 x, log_jac_block = block(x, inv=inv)
                 log_jac += log_jac_block
         else:
+            # from Latent Space -> Real Space
             for block in self.blocks[::-1]:
                 x, log_jac_block = block(x, inv=inv)
                 log_jac += log_jac_block
 
         return x, log_jac
+
+
+class INNwProb(nn.Module):
+    """
+    Class that evaluates the probability at a certain point in real space or generates samples in latent space.
+    """
+    inds_up: list
+    inds_down: list
+    intmediate: tuple = (3,)
+    offset: any = jnp.zeros(2)
+    latentSpaceName: str = "Gauss"
+    dim: int = 2
+
+    def setup(self):
+        self.latent_space_dist_dict = {"Gauss": {"pdf": Gauss, "N_params": 0},
+                                       "Student_t": {"pdf": Student_t, "N_params": 1}}
+        self.latent_space_dist = self.latent_space_dist_dict[self.latentSpaceName]["pdf"](dim=self.dim)
+
+        self.A = self.param("A", jax.nn.initializers.zeros, (self.dim, self.dim))
+        self.mu = self.param("mu", jax.nn.initializers.zeros, self.dim)
+        self.dist_params = self.param("dist_params", jax.nn.initializers.zeros, (self.latent_space_dist_dict[self.latentSpaceName]["N_params"]))
+        # self.dist_params = None
+
+        self.myINN = INN(inds_up=self.inds_up, inds_down=self.inds_down, intmediate=self.intmediate)
+
+    def __call__(self, x, evaluate=True, inv=False):
+        if evaluate:  # used for evaluation
+            z, log_jac = self.myINN(x, inv=inv)
+            p_latent_log = self.latent_space_dist(z - self.offset, {"S": util.build_cov_matrix(self.A), "mu": self.mu, "dist_params": self.dist_params})
+            return p_latent_log + log_jac
+        else:  # used for sampling
+            p_latent_log = self.latent_space_dist(x - self.offset, {"S": util.build_cov_matrix(self.A), "mu": self.mu, "dist_params": self.dist_params})
+            x, log_jac = self.myINN(x, inv=inv)
+            return x, p_latent_log - log_jac
 
 
 class SanityINN(nn.Module):

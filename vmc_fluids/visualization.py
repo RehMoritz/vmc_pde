@@ -4,6 +4,7 @@ from matplotlib import cm
 import jax
 import jax.numpy as jnp
 import numpy as np
+import h5py
 import flax.linen as nn
 from dataclasses import dataclass
 from functools import partial
@@ -26,13 +27,16 @@ def plot(vState, grid, z_lim=None, proj=False, fun=None):
         ax = plt.axes(projection='3d')
         real_space_probs = jnp.exp(real_space_probs).reshape((grid.n_gridpoints, grid.n_gridpoints))
         ax.plot_surface(grid.meshgrid[0], grid.meshgrid[1], real_space_probs, cmap=cm.coolwarm)
-        ax.set_zlabel('z')
+        # ax.set_zlabel('z')
+        ax.set_zlim(0, 0.15)
         if z_lim != None:
             ax.set_zlim([0, z_lim])
 
     ax.set_title('Model')
     ax.set_xlabel('x')
     ax.set_ylabel('y')
+    # plt.axis('off')
+    plt.tight_layout()
 
 
 def plot_line(vState, scale=1, n_gridpoints=100, fit=False, offset=np.zeros(2)):
@@ -181,7 +185,6 @@ def make_final_plots(wdir, infos):
     if "entropy" in infos.keys():
         plt.figure()
         plt.plot(np.array(infos["times"]), np.array(infos["entropy"]), label=rf'INN')
-        print(np.array(infos["x1"]).shape[-1])
         plt.plot(np.array(infos["times"]), 0.5 * np.array(infos["x1"]).shape[-1] * jnp.log(2 * jnp.pi * jnp.exp(1) * (1 + 2 * np.array(infos["times"]))), label='Exact')
         plt.grid()
         plt.ylabel(r'Entropy')
@@ -190,11 +193,22 @@ def make_final_plots(wdir, infos):
         plt.tight_layout()
         plt.savefig(wdir + 'entropy.pdf')
 
+    if "dist_params" in infos.keys():
+        plt.figure()
+        for i, dist_params in enumerate(np.array(infos["dist_params"]).T):
+            plt.plot(np.array(infos["times"]), np.exp(dist_params) + 1, label=rf'Latent parameter {i}')
+        plt.grid()
+        plt.xlabel(r'$t$')
+        plt.ylabel(r'$\nu$')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(wdir + 'latent_parameter.pdf')
+
     if "x3" in infos.keys():
         dim_of_interest = 0
         plt.figure()
         for key in infos.keys():
-            if key[0] == "x" and int(key[1]) % 2 != 0:
+            if key[0] == "x":  # and int(key[1]) % 2 != 0:
                 plt.plot(np.array(infos["times"]), np.array(infos[key])[:, dim_of_interest], label=fr'$\langle x^{key[1]}\rangle$')
         plt.grid()
         plt.ylabel(r'$\sigma^2$')
@@ -250,6 +264,23 @@ def make_final_plots(wdir, infos):
         plt.ylabel('SNR')
         plt.xlabel(r'$t$')
         plt.yscale('log')
-        plt.show()
         plt.tight_layout()
         plt.savefig(wdir + 'snr.pdf')
+
+    if any("integral" in key for key in infos.keys()) or False:
+        plt.figure()
+        plt.plot(np.array(infos["times"]), np.array(infos["integral_1sigma"]))
+        plt.plot(np.array(infos["times"]), np.array(infos["integral_0.5sigma"]))
+        plt.plot(np.array(infos["times"]), np.array(infos["integral_0.1sigma"]))
+        plt.grid()
+        plt.ylabel('Integral value')
+        plt.yscale('log')
+        plt.xlabel(r'$t$')
+        plt.tight_layout()
+        plt.savefig(wdir + 'integral.pdf')
+
+
+if __name__ == "__main__":
+    wdir = "/home/moritz/Insync/moritz.reh@gmail.com/Google Drive/10_Studium/02_MASTER/02_MasterArbeit/03_WorkResults/02_Results/200_GitHubRepos_Code/vmc_fluids/vmc_fluids/output/harmonicOsc_diff/NsamplesTDVP10000_NsamplesObs10000/"
+    infos = h5py.File(wdir + "infos.hdf5", "r")
+    make_final_plots(wdir, infos)

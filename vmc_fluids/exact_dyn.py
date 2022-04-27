@@ -12,6 +12,7 @@ import warnings
 import sampler
 import mpi_wrapper
 import visualization
+import util
 
 
 def latent_space_dist_paper(x, offset):
@@ -37,9 +38,9 @@ def _velocity_field_hamiltonian(coord, evolParams):
                              + jnp.sum(ps**2) / (2. * evolParams["m"])
                              + evolParams["lam"] * jnp.sum(xs**4))
         else:
-            return jnp.pi * (evolParams["m"] * evolParams["omega"]**2 / 2 * jnp.sum(x[0::2]**2)
-                             + jnp.sum(x[1::2]**2) / (2. * evolParams["m"])
-                             + evolParams["lam"] * jnp.sum(x[0::2]**4))
+            return (evolParams["m"] * evolParams["omega"]**2 / 2 * jnp.sum(x[0::2]**2)
+                    + jnp.sum(x[1::2]**2) / (2. * evolParams["m"])
+                    + evolParams["lam"] * jnp.sum(x[0::2]**4))
     grads = jax.grad(H)(coord)
     mat = jnp.kron(jnp.eye(coord.shape[0] // 2), jnp.array([[0, 1], [-1, 0]]))
     return mat @ grads
@@ -58,6 +59,7 @@ def update_fun_phaseSpace(coord, parameters, vel_field, dt, key):
     v_diff = jnp.sqrt(2 * parameters["m"] * parameters["gamma"] * parameters["T"] / dt) * jax.random.normal(key, shape=coord.shape)
     v_damp = - parameters["gamma"] * coord
     return v_adv + v_diff * mask + v_damp * mask
+    # return v_damp * mask
 
 
 def update_fun_Diff(coord, parameters, vel_field, dt, key):
@@ -80,22 +82,13 @@ def integrate(coords, dt, parameters, vel_field, update_fun, key):
     return jax.vmap(integrate_single_coord, in_axes=(0, None, None, None, None, 0))(coords, dt, parameters, vel_field, update_fun, keys)
 
 
-wdir = "output/exact_dyn/"
-if mpi_wrapper.rank == 0:
-    try:
-        os.makedirs(wdir)
-    except OSError:
-        print("Creation of the directory %s failed" % wdir)
-    else:
-        print("Successfully created the directory %s " % wdir)
-
 if __name__ == "__main__":
-    N_s = 1000000
-    case = "diffusion"
-    sigma = 1e0
+    N_s = 10000
+    case = "hamiltonian"
+    sigma = 1e-0
     if case == "fluidpaper":
         dim = 2
-        parameters = {"T": 10., "t": 0., "gamma": 1.0, "temp": 1.0, "m": 1.0, "omega": 1.0, "lam": 0.0}
+        parameters = {"T": 10., "t": 0., "gamma": 1.0, "m": 1.0, "omega": 1.0, "lam": 0.0}
         vel_field = _velocity_field_fluiddynpaper
         mcmcbound = 0.25
         sampler = sampler.Sampler(dim=dim, numChains=30, latent_space_prob=latent_space_dist_paper, mcmc_info={"offset": offset, "bound": mcmcbound})
@@ -103,32 +96,55 @@ if __name__ == "__main__":
     elif case == "hamiltonian":
         dim = 6
         offset = jnp.array([0, 1, 0.5, 0.5, 1, 0])
-        parameters = {"T": 10., "t": 0., "gamma": 1.0, "temp": 1.0, "m": 1.0, "omega": 1.0, "lam": 0.0}
+        offset = jnp.array([1, 0, 1, 0, 1, 0])
+        # offset = jnp.array([1, 0])
+        parameters = {"T": 10, "t": 0., "gamma": 1, "m": 1.0, "omega": 1.0, "lam": 0.0}
         update_fun = update_fun_phaseSpace
         vel_field = _velocity_field_hamiltonian
         coords = sigma * jax.random.normal(jax.random.PRNGKey(0), (N_s, dim)) + offset
     elif case == "diffusion":
-        dim = 2
+        dim = 6
         offset = jnp.zeros(dim)
-        parameters = {"T": 10., "t": 0., "D": 2}
+        parameters = {"T": 10., "t": 0., "D": 1}
         update_fun = update_fun_Diff
         vel_field = None
         coords = sigma * jax.random.normal(jax.random.PRNGKey(0), (N_s, dim)) + offset
 
+    t_end = 12
+    dt = 1e-2
     t = 0
-    t_end = .1
-    dt = 1e-3
-    plot_every = 3e10
+    plot_every = 1e2
     key = jax.random.PRNGKey(0)
-    infos = {"x1": [], "times": [], "covar": []}
+
+    wdir = "output/exact_dyn/"
+    wdir += case + f"/Nsamples{N_s}_T10.0/"
+    if mpi_wrapper.rank == 0:
+        try:
+            os.makedirs(wdir)
+        except OSError:
+            print("Creation of the directory %s failed" % wdir)
+        else:
+            print("Successfully created the directory %s " % wdir)
+
+    def mc_integral(coords, lim=1):
+        return jnp.sum(jnp.linalg.norm(coords, axis=-1) < lim) / coords.shape[0]
+
+    infos = {"x1": [], "times": [], "covar": [], "integral_1sigma": [], "integral_0.5sigma": [], "integral_0.1sigma": []}
     while t < t_end:
         key, key_to_use = jax.random.split(key)
-        coords = integrate(coords, dt, parameters, vel_field, update_fun, key_to_use)
 
         infos["times"].append(t)
         infos["x1"].append(jnp.mean(coords, axis=0))
         infos["covar"].append(jnp.cov(coords.T, ddof=0))
-        print(infos["covar"][-1])
+        infos["integral_1sigma"].append(mc_integral(coords, lim=jnp.sqrt(parameters["T"])))
+        infos["integral_0.5sigma"].append(mc_integral(coords, lim=0.5 * jnp.sqrt(parameters["T"])))
+        infos["integral_0.1sigma"].append(mc_integral(coords, lim=0.1 * jnp.sqrt(parameters["T"])))
+
+        coords = integrate(coords, dt, parameters, vel_field, update_fun, key_to_use)
+        print(f"\t covar = {infos['covar'][-1]}")
+        print(f"\t integral_1sigma = {infos['integral_1sigma'][-1]}")
+        print(f"\t integral_0.5sigma = {infos['integral_0.5sigma'][-1]}")
+        print(f"\t integral_0.1sigma = {infos['integral_0.1sigma'][-1]}")
 
         t += dt
         parameters["t"] = t
@@ -138,4 +154,5 @@ if __name__ == "__main__":
             plot_samples(coords)
 
     visualization.make_final_plots(wdir, infos)
+    util.store_infos(wdir, infos)
     plt.show()

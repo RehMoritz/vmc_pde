@@ -5,6 +5,7 @@ import numpy as np
 
 import time
 from dataclasses import dataclass
+import scipy.special
 
 import global_defs
 import var_state
@@ -94,40 +95,44 @@ class TDVP:
         return update, jnp.linalg.norm(self.S.dot(update) - F) / jnp.linalg.norm(F), tdvp_error
 
     def __call__(self, netParameters, t, psi, evolutionEq, **rhsArgs):
-        numSamples = rhsArgs["numSamples"]
-        mpi.globNumSamples = numSamples
+        nSamplesTDVP = rhsArgs["nSamplesTDVP"]
+        nSamplesObs = rhsArgs["nSamplesObs"]
+        mpi.globNumSamples = nSamplesTDVP
         tmpParameters = psi.get_parameters()
         psi.set_parameters(netParameters)
 
-        outp = None
-        if "outp" in rhsArgs:
-            outp = rhsArgs["outp"]
-        self.outp = outp
+        timings = rhsArgs["timings"]
 
-        def start_timing(outp, name):
-            if outp is not None:
-                outp.start_timing(name)
+        def start_timing(timings, name):
+            if timings is not None:
+                timings.start_timing(name)
 
-        def stop_timing(outp, name, waitFor=None):
+        def stop_timing(timings, name, waitFor=None):
             if waitFor is not None:
                 waitFor.block_until_ready()
-            if outp is not None:
-                outp.stop_timing(name)
+            if timings is not None:
+                timings.stop_timing(name)
 
         # Get sample
-        start_timing(outp, "sampling")
-        sampleConfigs = psi.sample(numSamples=numSamples)
-        stop_timing(outp, "sampling", waitFor=sampleConfigs)
+        start_timing(timings, "sampling")
+        sampleConfigs, logProbs = psi.sample(numSamples=nSamplesTDVP)
+        stop_timing(timings, "sampling", waitFor=sampleConfigs)
 
         # Evaluate local energy
-        start_timing(outp, "compute Eloc")
+        start_timing(timings, "compute Eloc")
         Eloc, sampleGradients, logProbs = evolutionEq(psi, sampleConfigs, t)
         # sampleGradients = jnp.clip(sampleGradients, a_min=-100, a_max=100)
-        stop_timing(outp, "compute Eloc", waitFor=Eloc)
+        stop_timing(timings, "compute Eloc", waitFor=Eloc)
 
-        start_timing(outp, "solve TDVP eqn.")
+        start_timing(timings, "solve TDVP eqn.")
         update, self.solverResidual, self.tdvp_error = self.solve(Eloc, sampleGradients, logProbs)
-        stop_timing(outp, "solve TDVP eqn.")
+        stop_timing(timings, "solve TDVP eqn.")
+
+        if nSamplesObs > nSamplesTDVP:
+            # Get sample
+            start_timing(timings, "sampling observables")
+            sampleConfigs, logProbs = psi.sample(numSamples=nSamplesObs)
+            stop_timing(timings, "sampling observables", waitFor=sampleConfigs)
 
         # import sys
         # jnp.set_printoptions(threshold=sys.maxsize)
@@ -139,17 +144,6 @@ class TDVP:
             print("nan encountered. Exitting.")
             exit()
 
-        # print(sampleGradients)
-        # print(logProbs)
-        # print(Eloc)
-        # print(self.S0)
-        # print(self.F0)
-        # print(update)
-        # exit()
-
-        if outp is not None:
-            outp.add_timing("MPI communication", mpi.get_communication_time())
-
         info = {}
         mean = jnp.mean(sampleConfigs, axis=(0, 1), keepdims=True)
         info["x1"] = mean[0, 0]
@@ -158,5 +152,17 @@ class TDVP:
         for m in [3, 4, 5, 6]:
             info[f"x{m}"] = jnp.mean((sampleConfigs - mean)**m, axis=(0, 1))
         info["max_grad"] = jnp.max(Eloc)
+
+        # integrate on small cell
+        dim = sampleConfigs.shape[-1]
+        samples = jax.random.normal(psi.sampler.key, shape=(1, nSamplesObs, sampleConfigs.shape[-1]))
+        samples = samples / jnp.linalg.norm(samples, axis=-1, keepdims=True) * jax.random.uniform(psi.sampler.key, shape=(1, nSamplesObs,))[..., None]**(1 / dim)
+
+        for lim in [1, 0.5, 0.1]:  # the sigma here is in reference to a standard normal distribution - we need to scale it accordingly
+            lim_normal = lim
+            T = 10
+            lim = lim * jnp.sqrt(T)  # the variance is T - the stddev is sqrt(T)
+            sphere_volume = jnp.pi**(dim / 2) / scipy.special.gamma(dim / 2 + 1) * lim**dim
+            info[f"integral_{lim_normal}sigma"] = jnp.mean(jnp.exp(psi(lim * samples))) * sphere_volume
 
         return update, info

@@ -100,9 +100,11 @@ class FixedStepper:
         * ``maxStep``: Maximal allowed time step.
     """
 
-    def __init__(self, timeStep=1e-3, mode='Heun'):
+    def __init__(self, timeStep=1e-3, maxStep=1e-2, increase_fac=1.3, mode='Heun'):
         self.dt = timeStep
+        self.maxStep = maxStep
         self.mode = mode
+        self.increase_fac = increase_fac
 
     def step(self, t, f, y, normFunction=jnp.linalg.norm, **rhsArgs):
         """ This function performs an integration time step.
@@ -125,6 +127,8 @@ class FixedStepper:
         """
 
         yInitial = y.copy()
+
+        self.dt = np.min([self.dt * self.increase_fac, self.maxStep])
 
         if self.mode == 'Heun':
             y = yInitial.copy()
