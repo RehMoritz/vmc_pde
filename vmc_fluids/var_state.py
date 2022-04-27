@@ -74,7 +74,7 @@ class VarState:
         return self.net.apply(params, x)
 
     def sample(self, numSamples):
-        dist_params = {"S": util.build_cov_matrix(self.params["params"]["A"]), "mu": self.params["params"]["mu"], "dist_params": self.params["params"]["dist_params"]}
+        dist_params = {"S": util.build_cov_matrix(self.params["params"]["L"], self.params["params"]["L_diag"], self.dim), "mu": self.params["params"]["mu"], "dist_params": self.params["params"]["dist_params"]}
         latent_space_samples = self.sampler(numSamples, dist_params)
         return self._latent_coords_jitd(latent_space_samples, self.params)
 

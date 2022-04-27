@@ -122,6 +122,7 @@ nSamplesObs = 10000
 
 wdir = "output/" + mode + f"/NsamplesTDVP{nSamplesTDVP}_NsamplesObs{nSamplesObs}_T10/"
 wdir = "output/" + mode + f"/NsamplesTDVP{nSamplesTDVP}_NsamplesObs{nSamplesObs}/"
+wdir = "output/" + "trash/" + mode + f"/NsamplesTDVP{nSamplesTDVP}_NsamplesObs{nSamplesObs}/"
 if mpi_wrapper.rank == 0:
     try:
         os.makedirs(wdir)

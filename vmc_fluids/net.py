@@ -198,7 +198,8 @@ class INNwProb(nn.Module):
                                        "Student_t": {"pdf": Student_t, "N_params": 1}}
         self.latent_space_dist = self.latent_space_dist_dict[self.latentSpaceName]["pdf"](dim=self.dim)
 
-        self.A = self.param("A", jax.nn.initializers.zeros, (self.dim, self.dim))
+        self.L = self.param("L", jax.nn.initializers.zeros, ((self.dim**2 - self.dim) // 2,))
+        self.L_diag = self.param("L_diag", jax.nn.initializers.zeros, (self.dim,))
         self.mu = self.param("mu", jax.nn.initializers.zeros, self.dim)
         self.dist_params = self.param("dist_params", jax.nn.initializers.zeros, (self.latent_space_dist_dict[self.latentSpaceName]["N_params"]))
         # self.dist_params = None
@@ -208,10 +209,10 @@ class INNwProb(nn.Module):
     def __call__(self, x, evaluate=True, inv=False):
         if evaluate:  # used for evaluation
             z, log_jac = self.myINN(x, inv=inv)
-            p_latent_log = self.latent_space_dist(z - self.offset, {"S": util.build_cov_matrix(self.A), "mu": self.mu, "dist_params": self.dist_params})
+            p_latent_log = self.latent_space_dist(z - self.offset, {"S": util.build_cov_matrix(self.L, self.L_diag, self.dim), "mu": self.mu, "dist_params": self.dist_params})
             return p_latent_log + log_jac
         else:  # used for sampling
-            p_latent_log = self.latent_space_dist(x - self.offset, {"S": util.build_cov_matrix(self.A), "mu": self.mu, "dist_params": self.dist_params})
+            p_latent_log = self.latent_space_dist(x - self.offset, {"S": util.build_cov_matrix(self.L, self.L_diag, self.dim), "mu": self.mu, "dist_params": self.dist_params})
             x, log_jac = self.myINN(x, inv=inv)
             return x, p_latent_log - log_jac
 
