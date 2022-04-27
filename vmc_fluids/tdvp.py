@@ -52,7 +52,6 @@ class TDVP:
         return S, F, EOdata
 
     def get_sr_equation(self, Eloc, gradients):
-
         return get_tdvp_equation(Eloc, gradients, rhsPrefactor=1.)
 
     def transform_to_eigenbasis(self, S, F, EOdata):
@@ -134,9 +133,6 @@ class TDVP:
             sampleConfigs, logProbs = psi.sample(numSamples=nSamplesObs)
             stop_timing(timings, "sampling observables", waitFor=sampleConfigs)
 
-        # import sys
-        # jnp.set_printoptions(threshold=sys.maxsize)
-        # print(sampleGradients[0, 0, :])
         if jnp.any(jnp.isnan(update)):
             print(sampleGradients)
             print(self.S0)

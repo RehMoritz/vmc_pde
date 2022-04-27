@@ -30,7 +30,6 @@ class VarState:
         self._grads_params_jitd = global_defs.pmap_for_my_devices(jax.vmap(jax.value_and_grad(lambda coords, params: - self.real_space_prob(coords, params), argnums=1), in_axes=(0, None)), in_axes=(0, None))
         self._grads_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(jax.value_and_grad(lambda coords, params: self.real_space_prob(coords, params), argnums=(0, 1)), in_axes=(0, None)), in_axes=(0, None))
         self._hessian_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(jax.jacrev(jax.jacfwd(lambda coords, params: self.real_space_prob(coords, params), argnums=0), argnums=0), in_axes=(0, None)), in_axes=(0, None))
-        self._hessiandiag_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(self._hvp, in_axes=(0, None)), in_axes=(0, None))
         self._latent_coords_jitd = global_defs.pmap_for_my_devices(jax.vmap(lambda coords, params: self.net.apply(params, coords, evaluate=False, inv=True), in_axes=(0, None)), in_axes=(0, None))
         self._flatten_tree_jitd = global_defs.pmap_for_my_devices(jax.vmap(self.flatten_tree))
 
@@ -65,14 +64,7 @@ class VarState:
                 return value, coord_grads, self._flatten_tree_jitd(param_grads)
 
     def hessian(self, coords):
-        # import warnings
-        # warnings.warn("Computing full Hessian of the coordinates.")
         return self._hessian_coords_jitd(coords, self.params)
-
-    def hessian_diag(self, coords):
-        import warnings
-        warnings.warn("Hessian diag is not correctly implemented.")
-        return self._hessiandiag_coords_jitd(coords, self.params)
 
     def _hvp(self, coords, params):
         f = jax.grad(partial(lambda x, y: self.real_space_prob(y, x), params))
