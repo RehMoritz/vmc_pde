@@ -159,7 +159,7 @@ def make_final_plots(wdir, infos):
         covar = np.array(infos["covar"])
         for i in range(covar.shape[-1]):
             plt.plot(np.array(infos["times"]), covar[:, i, i], label=rf'$\sigma_{i}^2$ - INN')
-        plt.plot(np.array(infos["times"]), 1 + 2 * np.array(infos["times"]), label='Exact')
+        # plt.plot(np.array(infos["times"]), 1 + 2 * np.array(infos["times"]), label='Exact')
         plt.grid()
         plt.ylabel(r'$\sigma^2$')
         plt.xlabel(r'$t$')
