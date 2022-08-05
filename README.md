@@ -1,4 +1,6 @@
 # vmc_pde
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/RehMoritz/vmc_pde/blob/main/vmc_pde_MinimalDemo.ipynb)
+
 
 Code for the paper "Variational Monte Carlo Approach to Partial Differential Equations with Neural Networks" (https://arxiv.org/abs/2206.01927).
 
@@ -19,3 +21,4 @@ The code should run as is for the following package versions:
 >>> jaxlib.__version__
 '0.1.74'
 ```
+A minimal working example can be found by clicking the Colab badge.
