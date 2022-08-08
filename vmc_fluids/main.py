@@ -32,11 +32,13 @@ sampleKey = 1
 
 mode_dict = {"fluidpaper": {"offset": jnp.ones(2) * 0.25, "dim": 2, "latent_space_name": "cos_dist", "mcmcbound": 0.25, "gridbound": 1., "symgrid": False, "evolution_type": "advection_paper"},
              "harmonicOsc": {"offset": jnp.ones(2) * 1, "dim": 2, "latent_space_name": "Gauss", "mcmcbound": 0.25, "gridbound": 8., "symgrid": True, "evolution_type": "advection_hamiltonian"},
-             "harmonicOsc_diff": {"offset": jnp.array([1, 0, 1, 0, 1, 0]) * 1, "dim": 6, "latent_space_name": "Gauss", "mcmcbound": 0.25, "gridbound": 8., "symgrid": True, "evolution_type": "advection_hamiltonian_wDiss"},
-             "diffusion": {"offset": jnp.zeros(8), "dim": 8, "latent_space_name": "Gauss", "mcmcbound": 0.25, "gridbound": 10., "symgrid": True, "evolution_type": "diffusion"},
-             "diffusion_anisotropic": {"offset": jnp.zeros(12), "dim": 12, "latent_space_name": "Gauss", "mcmcbound": 0.25, "gridbound": 10., "symgrid": True, "evolution_type": "diffusion_anisotropic"}}
+             "harmonicOsc_diff": {"offset": jnp.array([1, 0, 0, 1, 0, 0]) * 1, "dim": 6, "latent_space_name": "Gauss", "mcmcbound": 0.25, "gridbound": 8., "symgrid": True, "evolution_type": "advection_hamiltonian_wDiss"},
+             "diffusion": {"offset": jnp.zeros(8), "dim": 8, "latent_space_name": "Student_t", "mcmcbound": 0.25, "gridbound": 10., "symgrid": True, "evolution_type": "diffusion"},
+             "diffusion_anisotropic": {"offset": jnp.zeros(12), "dim": 12, "latent_space_name": "Gauss", "mcmcbound": 0.25, "gridbound": 10., "symgrid": True, "evolution_type": "diffusion_anisotropic"},
+             "mwe": {"offset": jnp.zeros(2), "dim": 2, "latent_space_name": "Gauss", "mcmcbound": 0.25, "gridbound": 10., "symgrid": True, "evolution_type": "diffusion"}}
 mode = "harmonicOsc_diff"
-# mode = "diffusion"
+mode = "diffusion"
+mode = "mwe"
 
 """
 List of things that have to be set manually before starting a run:
@@ -45,14 +47,15 @@ List of things that have to be set manually before starting a run:
     - Diffusion: noAdd
     - harmonicOsc: DifferentAdd
 - timestep:
-    - Diffusion: dt = 1e-7, fixed, with increasing step size
-    - harmonicOsc: dt=1e-4, fixed, with increasing step size
+    - Diffusion: dt = 1e-7, fixed, with increasing step size, factor:, maxStep:
+    - harmonicOsc: dt=1e-4, fixed, with increasing step size, factor: 1.3, maxStep: 1e-2
 - blocks:
     - Diffusion:: 4, intmediate (dim//2)
-    - harmonicOsc: 4, intmediate (,) <-- No extra layer
-
+    - harmonicOsc: 4, intmediate (dim // 2)
+- latent space covariance matrix:
+    - Diffusion: np.eye(..) + A @ A.T
+    - harmonicOsc: L @ L.T
 """
-
 
 dim = mode_dict[mode]["dim"]
 offset = mode_dict[mode]["offset"]
@@ -105,8 +108,9 @@ if dim == 2:
 dt = 1e-7
 tol = 1e-2
 maxStep = 1e-2
-myStepper = stepper.AdaptiveHeun(timeStep=dt, tol=tol, maxStep=maxStep)
-# myStepper = stepper.FixedStepper(timeStep=dt, mode='Heun', maxStep=maxStep, increase_fac=1.3)
+comp_integrals = False
+# myStepper = stepper.AdaptiveHeun(timeStep=dt, tol=tol, maxStep=maxStep)
+myStepper = stepper.FixedStepper(timeStep=dt, mode='Heun', maxStep=maxStep, increase_fac=1.3)
 tdvpEq = tdvp.TDVP()
 timings = util.Timings()
 evolutionEq = evolutionEq.EvolutionEquation(dim=dim, name=evolution_type)
@@ -122,7 +126,8 @@ nSamplesObs = 10000
 
 wdir = "output/" + mode + f"/NsamplesTDVP{nSamplesTDVP}_NsamplesObs{nSamplesObs}_T10/"
 wdir = "output/" + mode + f"/NsamplesTDVP{nSamplesTDVP}_NsamplesObs{nSamplesObs}/"
-wdir = "output/" + "trash/" + mode + f"/NsamplesTDVP{nSamplesTDVP}_NsamplesObs{nSamplesObs}/"
+wdir = "output/" + mode + f"/NsamplesTDVP{nSamplesTDVP}_NsamplesObs{nSamplesObs}_Tdifferent/"
+wdir = "output/" + mode + f"/test_NsamplesTDVP{nSamplesTDVP}_NsamplesObs{nSamplesObs}_maxStep{maxStep}/"
 if mpi_wrapper.rank == 0:
     try:
         os.makedirs(wdir)
@@ -133,14 +138,14 @@ if mpi_wrapper.rank == 0:
 
 t = 0
 t_end = 5
-plot_every = 1e2
+plot_every = 1e0
 
 if dim == 2:
     # visualization.plot_vectorfield(grid, evolutionEq)
     # plt.savefig(wdir + 'vectorfield.pdf')
     # plt.show()
 
-    visualization.plot(vState, grid, proj=True)
+    visualization.plot(vState, grid, proj=False)
     plt.savefig(wdir + f't_{t:.3f}.pdf')
     plt.show()
 
@@ -150,9 +155,10 @@ if dim == 2:
 
 
 infos = {"times": [], "ev": [], "snr": [], "solver_res": [], "tdvp_error": [], "dist_params": []}
+n_list = []
 while t < t_end + dt:
     t1 = time.perf_counter()
-    dp, dt, info = myStepper.step(0, tdvpEq, vState.get_parameters(), evolutionEq=evolutionEq, psi=vState, nSamplesTDVP=nSamplesTDVP, nSamplesObs=nSamplesObs, normFunction=norm_fun, timings=timings)
+    dp, dt, info = myStepper.step(0, tdvpEq, vState.get_parameters(), evolutionEq=evolutionEq, psi=vState, nSamplesTDVP=nSamplesTDVP, nSamplesObs=nSamplesObs, normFunction=norm_fun, timings=timings, integrals=comp_integrals)
     vState.set_parameters(dp)
     infos["times"].append(t)
 
@@ -164,9 +170,10 @@ while t < t_end + dt:
     print("\t Data:")
     print(f"\t > Solver Residual = {tdvpEq.solverResidual}")
     print(f"\t > TDVP Error = {tdvpEq.tdvp_error}")
-    print(f"\t > Integral 1sigma = {info['integral_1sigma']}")
-    print(f"\t > Integral 0.5sigma = {info['integral_0.5sigma']}")
-    print(f"\t > Integral 0.1sigma = {info['integral_0.1sigma']}")
+    if comp_integrals:
+        print(f"\t > Integral 1sigma = {info['integral_1sigma']}")
+        print(f"\t > Integral 0.5sigma = {info['integral_0.5sigma']}")
+        print(f"\t > Integral 0.1sigma = {info['integral_0.1sigma']}")
     print(f"\t > Entropy = {info['entropy']}")
     print(f"\t > dist params = {vState.params['params']['dist_params']}")
     print(f"\t > Means = {info['x1']}")
@@ -182,19 +189,20 @@ while t < t_end + dt:
     infos["tdvp_error"].append(tdvpEq.tdvp_error)
     infos["dist_params"].append(vState.params['params']['dist_params'])
 
-    if (t - dt) % plot_every >= t % plot_every or dt >= plot_every:
-        if dim == 2:
-            integral = vState.integrate(grid)
-            print("Integral value:", integral)
+    n = round(t / plot_every)
+    if np.abs(t - n * plot_every) < dt and dim == 2 and n not in n_list:
+        n_list.append(n)
+        integral = vState.integrate(grid)
+        print("Integral value:", integral)
 
-            visualization.plot(vState, grid, proj=True)
-            plt.savefig(wdir + f't_{t:.3f}.pdf')
-            plt.show()
+        visualization.plot(vState, grid, proj=False)
+        plt.savefig(wdir + f't_{t:.3f}.pdf')
+        plt.show()
 
-        print(vState.net.apply(vState.params, jnp.zeros(dim,), evaluate=False, inv=True)[0])
+    print(vState.net.apply(vState.params, jnp.zeros(dim,), evaluate=False, inv=True)[0])
 
-        # visualization.plot_line(vState, scale=10, fit=True, offset=offset)
-        # plt.show()
+    # visualization.plot_line(vState, scale=10, fit=True, offset=offset)
+    # plt.show()
 
     t = t + dt
 
